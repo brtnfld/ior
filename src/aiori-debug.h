@@ -30,7 +30,6 @@ void FailMessage(int rank, const char *location, char *format, ...);
 extern int aiori_warning_as_errors;
 
 #define WARN(MSG) do {                                                   \
-        if(aiori_warning_as_errors){ ERR(MSG); }                           \
         if (verbose > VERBOSE_2) {                                       \
             fprintf(out_logfile, "WARNING: %s, (%s:%d).\n",               \
                     MSG, __FILE__, __LINE__);                            \

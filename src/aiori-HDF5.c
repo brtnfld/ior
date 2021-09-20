@@ -15,7 +15,6 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-
 #include <stdio.h>              /* only for fprintf() */
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -31,6 +30,11 @@
 
 #define NUM_DIMS 1              /* number of dimensions to data set */
 
+#define H5_HAVE_SUBFILING_VFD
+#ifdef H5_HAVE_SUBFILING_VFD
+#include "H5FDsubfiling.h" /* Private header for the subfiling VFD */
+#include "H5FDioc.h"
+#endif
 /******************************************************************************/
 /*
  * HDF5_CHECK will display a custom error message and then exit the program
@@ -177,10 +181,12 @@ static void HDF5_init_xfer_options(aiori_xfer_hint_t * params){
 
 static int HDF5_check_params(aiori_mod_opt_t * options){
   HDF5_options_t *o = (HDF5_options_t*) options;
+#if 0
   if (o->setAlignment < 0)
       ERR("alignment must be non-negative integer");
   if (o->individualDataSets)
       ERR("individual data sets not implemented");
+#endif
   if (o->noFill) {
     /* check if hdf5 available */
 #if defined (H5_VERS_MAJOR) && defined (H5_VERS_MINOR)
@@ -222,8 +228,10 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         MPI_Info mpiHints = MPI_INFO_NULL;
 
         fd = (hid_t *) malloc(sizeof(hid_t));
+#if 0
         if (fd == NULL)
                 ERR("malloc() failed");
+#endif
         /*
          * HDF5 uses different flags than those for POSIX/MPIIO
          */
@@ -286,6 +294,15 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                 ShowHints(&mpiHints);
                 fprintf(stdout, "}\n");
         }
+        char* SUBF = getenv("SUBF");
+        if(SUBF) {
+        H5FD_subfiling_config_t subfiling_conf;
+        memset(&subfiling_conf, 0, sizeof(subfiling_conf));
+
+        HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, &subfiling_conf),
+                   "cannot set file access property list");
+ 
+        }else 
         HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
                    "cannot set file access property list");
 
@@ -325,6 +342,15 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                 MPI_Info mpiHintsCheck = MPI_INFO_NULL;
                 hid_t apl;
                 apl = H5Fget_access_plist(*fd);
+       if(SUBF) {
+          H5FD_subfiling_config_t subfiling_conf;
+          memset(&subfiling_conf, 0, sizeof(subfiling_conf));
+
+          HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, &subfiling_conf),
+                   "cannot set file access property list");
+
+        }else  
+
                 HDF5_CHECK(H5Pget_fapl_mpio(apl, &comm, &mpiHintsCheck),
                            "cannot get info object through HDF5");
                 if (rank == 0) {
