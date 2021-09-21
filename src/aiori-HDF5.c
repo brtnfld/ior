@@ -355,6 +355,7 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                 MPI_Info mpiHintsCheck = MPI_INFO_NULL;
                 hid_t apl;
                 apl = H5Fget_access_plist(*fd);
+#if 0
        if(SUBF) {
              hid_t under_fapl;
              H5FD_ioc_config_t ioc_config;
@@ -375,7 +376,7 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
              H5Pclose(under_fapl);
 
         }else  
-
+#endif
                 HDF5_CHECK(H5Pget_fapl_mpio(apl, &comm, &mpiHintsCheck),
                            "cannot get info object through HDF5");
                 if (rank == 0) {
@@ -403,7 +404,6 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                 }
                 MPI_CHECK(MPI_Barrier(testComm), "barrier error");
         }
-
         /* this is necessary for resetting various parameters
            needed for reopening and checking the file */
         newlyOpenedFile = TRUE;
