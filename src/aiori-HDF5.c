@@ -297,23 +297,23 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         char* SUBF = getenv("SUBF");
         if(SUBF) {
 
-        hid_t under_fapl, fapl;
+        hid_t ioc_fapl, fapl;
         H5FD_ioc_config_t ioc_config;
         H5FD_subfiling_config_t subfiling_conf;
 
         memset(&ioc_config, 0, sizeof(ioc_config));
         memset(&subfiling_conf, 0, sizeof(subfiling_conf));
 
-        under_fapl = H5Pcreate(H5P_FILE_ACCESS);
-        H5Pget_fapl_ioc(under_fapl, &ioc_config);
-        H5Pset_fapl_ioc(under_fapl, &ioc_config);
-       
         H5Pget_fapl_subfiling(accessPropList, &subfiling_conf);
 
-        HDF5_CHECK(H5Pset_fapl_subfiling(under_fapl, &subfiling_conf),
+        ioc_fapl = H5Pcreate(H5P_FILE_ACCESS);
+        H5Pget_fapl_ioc(ioc_fapl, &ioc_config);
+        H5Pset_fapl_ioc(ioc_fapl, &ioc_config);
+       
+        HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, &subfiling_conf),
                    "cannot set file access property list");
 
-        H5Pclose(under_fapl);
+        H5Pclose(ioc_fapl);
  
         }else 
         HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
@@ -338,14 +338,18 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         /* open file */
         if(! hints->dryRun){
           if (flags & IOR_CREAT) {     /* WRITE */
-                  *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, createPropList, accessPropList);
+               //   *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, createPropList, accessPropList);
+                  *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, H5P_DEFAULT, accessPropList); 
                   HDF5_CHECK(*fd, "cannot create file");
           } else {                /* READ or CHECK */
                   *fd = H5Fopen(testFileName, fd_mode, accessPropList);
                   HDF5_CHECK(*fd, "cannot open file");
           }
         }
-
+        
+        MPI_CHECK(MPI_Barrier(testComm), "barrier error");
+        printf("After H5Fcreate2\n"); 
+#if 0
         /* show hints actually attached to file handle */
         if (o->showHints || (1) /* WEL - this needs fixing */ ) {
                 if (rank == 0 && (o->showHints) /* WEL - this needs fixing */ ) {
@@ -404,6 +408,7 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                 }
                 MPI_CHECK(MPI_Barrier(testComm), "barrier error");
         }
+#endif
         /* this is necessary for resetting various parameters
            needed for reopening and checking the file */
         newlyOpenedFile = TRUE;
