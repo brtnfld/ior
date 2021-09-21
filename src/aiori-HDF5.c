@@ -296,11 +296,24 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         }
         char* SUBF = getenv("SUBF");
         if(SUBF) {
+
+        hid_t under_fapl, fapl;
+        H5FD_ioc_config_t ioc_config;
         H5FD_subfiling_config_t subfiling_conf;
+
+        memset(&ioc_config, 0, sizeof(ioc_config));
         memset(&subfiling_conf, 0, sizeof(subfiling_conf));
 
-        HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, &subfiling_conf),
+        under_fapl = H5Pcreate(H5P_FILE_ACCESS);
+        H5Pget_fapl_ioc(under_fapl, &ioc_config);
+        H5Pset_fapl_ioc(under_fapl, &ioc_config);
+       
+        H5Pget_fapl_subfiling(accessPropList, &subfiling_conf);
+
+        HDF5_CHECK(H5Pset_fapl_subfiling(under_fapl, &subfiling_conf),
                    "cannot set file access property list");
+
+        H5Pclose(under_fapl);
  
         }else 
         HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
@@ -343,11 +356,23 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                 hid_t apl;
                 apl = H5Fget_access_plist(*fd);
        if(SUBF) {
-          H5FD_subfiling_config_t subfiling_conf;
-          memset(&subfiling_conf, 0, sizeof(subfiling_conf));
+             hid_t under_fapl;
+             H5FD_ioc_config_t ioc_config;
+             H5FD_subfiling_config_t subfiling_conf;
 
-          HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, &subfiling_conf),
+             memset(&ioc_config, 0, sizeof(ioc_config));
+             memset(&subfiling_conf, 0, sizeof(subfiling_conf));
+
+             under_fapl = H5Pcreate(H5P_FILE_ACCESS);
+             H5Pget_fapl_ioc(under_fapl, &ioc_config);
+             H5Pset_fapl_ioc(under_fapl, &ioc_config);
+
+             H5Pget_fapl_subfiling(accessPropList, &subfiling_conf);
+
+             HDF5_CHECK(H5Pset_fapl_subfiling(under_fapl, &subfiling_conf),
                    "cannot set file access property list");
+
+             H5Pclose(under_fapl);
 
         }else  
 
