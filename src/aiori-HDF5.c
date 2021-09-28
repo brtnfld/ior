@@ -296,25 +296,8 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         }
         char* SUBF = getenv("SUBF");
         if(SUBF) {
-
-        hid_t ioc_fapl, fapl;
-        H5FD_ioc_config_t ioc_config;
-        H5FD_subfiling_config_t subfiling_conf;
-
-        memset(&ioc_config, 0, sizeof(ioc_config));
-        memset(&subfiling_conf, 0, sizeof(subfiling_conf));
-
-        H5Pget_fapl_subfiling(accessPropList, &subfiling_conf);
-
-        ioc_fapl = H5Pcreate(H5P_FILE_ACCESS);
-        H5Pget_fapl_ioc(ioc_fapl, &ioc_config);
-        H5Pset_fapl_ioc(ioc_fapl, &ioc_config);
-       
-        HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, &subfiling_conf),
+        HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, NULL),
                    "cannot set file access property list");
-
-        H5Pclose(ioc_fapl);
- 
         }else 
         HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
                    "cannot set file access property list");
@@ -361,20 +344,8 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                 apl = H5Fget_access_plist(*fd);
 #if 0
        if(SUBF) {
-             hid_t under_fapl;
-             H5FD_ioc_config_t ioc_config;
-             H5FD_subfiling_config_t subfiling_conf;
 
-             memset(&ioc_config, 0, sizeof(ioc_config));
-             memset(&subfiling_conf, 0, sizeof(subfiling_conf));
-
-             under_fapl = H5Pcreate(H5P_FILE_ACCESS);
-             H5Pget_fapl_ioc(under_fapl, &ioc_config);
-             H5Pset_fapl_ioc(under_fapl, &ioc_config);
-
-             H5Pget_fapl_subfiling(accessPropList, &subfiling_conf);
-
-             HDF5_CHECK(H5Pset_fapl_subfiling(under_fapl, &subfiling_conf),
+             HDF5_CHECK(H5Pset_fapl_subfiling(under_fapl, NULL),
                    "cannot set file access property list");
 
              H5Pclose(under_fapl);
