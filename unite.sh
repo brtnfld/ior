@@ -7,7 +7,6 @@ if [ $# -eq 0 ]; then
        echo "More than one .config file found in current directory."
        exit 1
     fi
-
     file_config=$(find . -maxdepth 1 -type f -iname "*.config")
 else
     file_config=$1
@@ -20,7 +19,7 @@ fi
 
 stripe_size=$(grep "stripe_size=" $file_config  | cut -d "=" -f2)
 if test -z "$stripe_size"; then
-    echo "failed to find stripe_size in .config"
+    echo "failed to find stripe_size in $file_config"
     exit 1
 fi
 
@@ -32,13 +31,13 @@ for i in "${subfile[@]}"; do
       echo "$i"
 done
 if test -z "$subfile"; then
-    echo "failed to find subfile list in .config"
+    echo "failed to find subfile list in $file_config"
     exit 1
 fi
 
 hdf5_file=$(grep "hdf5_file=" $file_config  | cut -d "=" -f2)
 if test -z "$hdf5_file"; then
-    echo "failed to find hdf5 output file in .config"
+    echo "failed to find hdf5 output file in $file_config"
     exit 1
 fi
 
