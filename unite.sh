@@ -1,7 +1,6 @@
 #!/bin/bash
 
 if [ $# -eq 0 ]; then
-
     nfiles=$(find . -maxdepth 1 -type f -iname "*.config" -printf '.' | wc -m)
     if [[ "$nfiles" != "1" ]]; then
        echo "More than one .config file found in current directory."
