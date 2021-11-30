@@ -42,15 +42,19 @@ rm -f $hdf5_file
 skip=0
 status=$nfiles
 while [ $status -gt 0 ]; do
+  icnt=0
   for i in "${subfiles[@]}"; do
       EXEC="dd count=1 bs=$stripe_size if=$i of=$hdf5_file skip=$skip oflag=append conv=notrunc"
       echo "$EXEC"
       err="$( $EXEC 2>&1 > /dev/null)"
-      if [[ "$err" == *"cannot"* ]]; then
-          status=$(($status-1))
+      if [[ "$err" == *" cannot "* ]]; then
+          subfiles=("${subfiles[@]:0:$icnt}" "${subfiles[@]:$(($icnt+1))}")
+          status=${#subfiles[@]}
+      else
+          icnt=$(($icnt+1)) 
       fi
   done
-  skip=$((skip+1))
+  skip=$(($skip+1))
 done
 
 
