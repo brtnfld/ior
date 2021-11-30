@@ -11,8 +11,8 @@
 
 #define H5FILE_NAME     "SDS_row.h5"
 #define DATASETNAME 	"IntArray" 
-#define NX     8                      /* dataset dimensions */
-#define NY     5 
+#define NX     65536                      /* dataset dimensions */
+#define NY     8 
 #define RANK   2
 
 int
@@ -43,6 +43,7 @@ main (int argc, char **argv)
      */
     int required = MPI_THREAD_MULTIPLE;
     int provided = 0;
+
     MPI_Init_thread(&argc, &argv, required, &provided);
 
     MPI_Comm_size(comm, &mpi_size);
@@ -52,21 +53,22 @@ main (int argc, char **argv)
      * Set up file access property list with parallel I/O access
      */
      plist_id = H5Pcreate(H5P_FILE_ACCESS);
-
-        hid_t ioc_fapl, fapl;
-        H5FD_ioc_config_t ioc_config;
-        H5FD_subfiling_config_t subfiling_conf;
+     hid_t ioc_fapl, fapl;
+     H5FD_ioc_config_t ioc_config;
+     H5FD_subfiling_config_t subfiling_conf;
+   
+     memset(&ioc_config, 0, sizeof(ioc_config));
+     memset(&subfiling_conf, 0, sizeof(subfiling_conf));
+            
+#if 0 
+     H5Pget_fapl_subfiling(plist_id, &subfiling_conf);
         
-        memset(&ioc_config, 0, sizeof(ioc_config));
-        memset(&subfiling_conf, 0, sizeof(subfiling_conf));
-        
-        H5Pget_fapl_subfiling(plist_id, &subfiling_conf);
-        
-        ioc_fapl = H5Pcreate(H5P_FILE_ACCESS);
-        H5Pget_fapl_ioc(ioc_fapl, &ioc_config);
-        H5Pset_fapl_ioc(ioc_fapl, &ioc_config);
-        
-        H5Pset_fapl_subfiling(plist_id, &subfiling_conf);
+     ioc_fapl = H5Pcreate(H5P_FILE_ACCESS);
+     H5Pget_fapl_ioc(ioc_fapl, &ioc_config);
+     H5Pset_fapl_ioc(ioc_fapl, &ioc_config);
+#endif
+     
+     H5Pset_fapl_subfiling(plist_id, NULL);
         
 //        H5Pclose(ioc_fapl);
 
@@ -75,6 +77,7 @@ main (int argc, char **argv)
      */
     file_id = H5Fcreate(H5FILE_NAME, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
     H5Pclose(plist_id);
+
    
     /*
      * Create the dataspace for the dataset.
@@ -119,7 +122,7 @@ main (int argc, char **argv)
      */
     
     status = H5Dwrite(dset_id, H5T_NATIVE_INT, memspace, filespace,
-		      H5P_DEFAULT, data);
+    		      H5P_DEFAULT, data);
     free(data);
 
     /*
@@ -128,6 +131,8 @@ main (int argc, char **argv)
     H5Dclose(dset_id);
     H5Sclose(filespace);
     H5Sclose(memspace);
+
+
     H5Fclose(file_id);
  
     MPI_Finalize();
