@@ -39,18 +39,18 @@ fi
 
 rm -f $hdf5_file
 
-N=0
-status=0
-while [ $status == 0 ]; do
+skip=0
+status=$nfiles
+while [ $status -gt 0 ]; do
   for i in "${subfiles[@]}"; do
-      EXEC="dd count=1 bs=$stripe_size if=$i of=$hdf5_file skip=$N oflag=append conv=notrunc"
+      EXEC="dd count=1 bs=$stripe_size if=$i of=$hdf5_file skip=$skip oflag=append conv=notrunc"
       echo "$EXEC"
       err="$( $EXEC 2>&1 > /dev/null)"
       if [[ "$err" == *"cannot"* ]]; then
-          status=1
+          status=$(($status-1))
       fi
-  done 
-  N=$((N+1))
+  done
+  skip=$((skip+1))
 done
 
 
