@@ -23,15 +23,12 @@ if test -z "$stripe_size"; then
     exit 1
 fi
 
-array=( SDS_row.h5.subfile_158671996_0_of_2 SDS_row.h5.subfile_158671996_1_of_2 )
-#array=( SDS_row.h5.subfile_158671996_0_of_1 )
-
-subfile=$( sed -e '1,/hdf5_file=/d' $file_config )
-for i in "${subfile[@]}"; do
+subfiles=( $( sed -e '1,/hdf5_file=/d' $file_config ) )
+for i in "${subfiles[@]}"; do
       echo "$i"
 done
-if test -z "$subfile"; then
-    echo "failed to find subfile list in $file_config"
+if test -z "$subfiles"; then
+    echo "failed to find subfiles list in $file_config"
     exit 1
 fi
 
@@ -46,7 +43,7 @@ rm -f $hdf5_file
 N=0
 status=0
 while [ $status == 0 ]; do
-  for i in "${array[@]}"; do
+  for i in "${subfiles[@]}"; do
       EXEC="dd count=1 bs=$stripe_size if=$i of=$hdf5_file skip=$N oflag=append conv=notrunc"
       echo "$EXEC"
       err="$( $EXEC 2>&1 > /dev/null)"
