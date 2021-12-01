@@ -2,12 +2,15 @@
 
 GRN='\033[0;32m'
 RED='\033[0;31m'
+PUR='\033[0;35m'
 NC='\033[0m' # No Color
+
+## CONFIG FILE CHECKSS ##
 
 if [ $# -eq 0 ]; then
     nfiles=$(find . -maxdepth 1 -type f -iname "*.config" -printf '.' | wc -m)
     if [[ "$nfiles" != "1" ]]; then
-       echo "$RED More than one .config file found in current directory. $NC"
+       echo -e "$RED More than one .config file found in current directory. $NC"
        exit 1
     fi
     file_config=$(find . -maxdepth 1 -type f -iname "*.config")
@@ -16,13 +19,13 @@ else
 fi
 
 if [ ! -f "$file_config" ]; then
-    echo "$RED $file_config does not exist. $NC"
+    echo -e "$RED $file_config does not exist. $NC"
     exit 1
 fi
 
 stripe_size=$(grep "stripe_size=" $file_config  | cut -d "=" -f2)
 if test -z "$stripe_size"; then
-    echo "$RED failed to find stripe_size in $file_config $NC"
+    echo -e "$RED failed to find stripe_size in $file_config $NC"
     exit 1
 fi
 
@@ -31,21 +34,23 @@ subfiles=( $( sed -e '1,/hdf5_file=/d' $file_config ) )
 #      echo "$i"
 #done
 if test -z "$subfiles"; then
-    echo "$RED failed to find subfiles list in $file_config $NC"
+    echo -e "$RED failed to find subfiles list in $file_config $NC"
     exit 1
 fi
 
 hdf5_file=$(grep "hdf5_file=" $file_config  | cut -d "=" -f2)
 if test -z "$hdf5_file"; then
-    echo "$RED failed to find hdf5 output file in $file_config $NC"
+    echo -e "$RED failed to find hdf5 output file in $file_config $NC"
     exit 1
 fi
 
 rm -f $hdf5_file
 
+## COMBINE SUBFILES INTO AN HDF5 FILE ##
+
 skip=0
 status=$nfiles
-
+START="$(date +%s%N)"
 while [ $status -gt 0 ]; do
   icnt=0
   for i in "${subfiles[@]}"; do
@@ -62,5 +67,8 @@ while [ $status -gt 0 ]; do
   done; wait
   skip=$(($skip+1))
 done
+END=$[ $(date +%s%N) - ${START} ]
+DURATION_SEC=$(awk -vp=$END -vq=0.000000001 'BEGIN{printf "%.4f" ,p * q}')
+echo -e "$PUR COMPLETION TIME = $DURATION_SEC s $NC"
 
 
