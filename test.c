@@ -132,9 +132,20 @@ main (int argc, char **argv)
     H5Sclose(filespace);
     H5Sclose(memspace);
 
-
     H5Fclose(file_id);
- 
+
+    /* open the HDF5 file */
+
+    plist_id = H5Pcreate(H5P_FILE_ACCESS);
+    H5Pset_fapl_subfiling(plist_id, NULL);
+
+    file_id = H5Fopen (H5FILE_NAME, H5F_ACC_RDONLY, plist_id);
+    dset_id = H5Dopen (file_id, DATASETNAME, H5P_DEFAULT);
+
+    H5Dclose(dset_id);
+    H5Fclose(file_id);
+    H5Pclose(plist_id);
+
     MPI_Finalize();
 
     return 0;
