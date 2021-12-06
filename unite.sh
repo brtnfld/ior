@@ -56,9 +56,9 @@ while [ $status -gt 0 ]; do
   for i in "${subfiles[@]}"; do
       fsize=$(wc -c $i | awk '{print $1}')
       if [ $(($skip*$stripe_size)) -le $fsize ]; then
-          EXEC="dd count=1 bs=$stripe_size if=$i of=$hdf5_file skip=$skip oflag=append conv=notrunc &"
+          EXEC="dd count=1 bs=$stripe_size if=$i of=$hdf5_file skip=$skip oflag=append conv=notrunc"
           echo -e "$GRN $EXEC $NC"
-          err="$( $EXEC 2>&1 > /dev/null)"
+          err="$( $EXEC 2>&1 > /dev/null &)"
           icnt=$(($icnt+1)) 
       else
           subfiles=("${subfiles[@]:0:$icnt}" "${subfiles[@]:$(($icnt+1))}")
