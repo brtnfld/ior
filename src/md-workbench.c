@@ -663,7 +663,7 @@ void run_benchmark(phase_stat_t * s, int * current_index_p){
         }
       }else{
         s->obj_read.err++;
-        EWARNF("%d: Error while reading the obj: %s", o.rank, obj_name);
+        WARNF("%d: Error while reading the obj: %s", o.rank, obj_name);
       }
       o.backend->close(aiori_fh, o.backend_options);
 
@@ -710,7 +710,7 @@ void run_benchmark(phase_stat_t * s, int * current_index_p){
         if (! o.ignore_precreate_errors){
          ERRF("%d: Error while creating the obj: %s", o.rank, obj_name);
         }
-        EWARNF("Unable to open file %s", obj_name);
+        WARNF("Unable to open file %s", obj_name);
         s->obj_create.err++;
       }
       bench_runtime = add_timed_result(op_timer, s->phase_start_timer, s->time_create, pos, & s->max_op_time, & op_time);
@@ -851,12 +851,12 @@ static int return_position(){
     FILE * f = fopen(o.run_info_file, "r");
     if(! f){
       ERRF("[ERROR] Could not open %s for restart", o.run_info_file);
-      exit(1);
+      exit(EXIT_FAILURE);
     }
     ret = fscanf(f, "pos: %d", & position);
     if (ret != 1){
       ERRF("Could not read from %s for restart", o.run_info_file);
-      exit(1);
+      exit(EXIT_FAILURE);
     }
     fclose(f);
   }
@@ -871,7 +871,7 @@ static void store_position(int position){
   FILE * f = fopen(o.run_info_file, "w");
   if(! f){
     ERRF("[ERROR] Could not open %s for saving data", o.run_info_file);
-    exit(1);
+    exit(EXIT_FAILURE);
   }
   fprintf(f, "pos: %d\n", position);
   fclose(f);
@@ -986,7 +986,7 @@ mdworkbench_results_t* md_workbench_run(int argc, char ** argv, MPI_Comm world_c
   if (o.phase_precreate){
     if (o.rank == 0){
       if (o.backend->mkdir(o.prefix, DIRMODE, o.backend_options) != 0) {
-          EWARNF("Unable to create test directory %s", o.prefix);
+          WARNF("Unable to create test directory %s", o.prefix);
       }
     }
     init_stats(& phase_stats, o.precreate * o.dset_count);

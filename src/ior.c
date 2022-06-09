@@ -120,7 +120,7 @@ static int test_initialize(IOR_test_t * test){
 #ifdef HAVE_CUDA
   cudaError_t cret = cudaSetDevice(test->params.gpuID);
   if(cret != cudaSuccess){
-    EWARNF("cudaSetDevice(%d) error: %s", test->params.gpuID, cudaGetErrorString(cret));
+    WARNF("cudaSetDevice(%d) error: %s", test->params.gpuID, cudaGetErrorString(cret));
   }
 #endif
 
@@ -261,7 +261,9 @@ void init_IOR_Param_t(IOR_param_t * p, MPI_Comm com)
 
         p->writeFile = p->readFile = FALSE;
         p->checkWrite = p->checkRead = FALSE;
-
+        
+        p->minTimeDuration = 0;
+        
         /*
          * These can be overridden from the command-line but otherwise will be
          * set from MPI.
@@ -318,7 +320,7 @@ DisplayOutliers(int numTasks,
                 if (ret != 0)
                         strcpy(hostname, "unknown");
 
-                EWARNF("for %s, task %d, %s %s is %f (mean=%f, stddev=%f)\n",
+                WARNF("for %s, task %d, %s %s is %f (mean=%f, stddev=%f)\n",
                         hostname, rank, accessString, timeString, timerVal,  mean, sd);
         }
 }
@@ -392,11 +394,11 @@ static void CheckFileSize(IOR_test_t *test, char * testFilename, IOR_offset_t da
                              != point->aggFileSizeFromXfer)
                             || (point->aggFileSizeFromStat
                                 != point->aggFileSizeFromXfer)) {
-                                EWARNF("Expected aggregate file size       = %lld", (long long) params->expectedAggFileSize);
-                                EWARNF("Stat() of aggregate file size      = %lld", (long long) point->aggFileSizeFromStat);
-                                EWARNF("Using actual aggregate bytes moved = %lld", (long long) point->aggFileSizeFromXfer);
+                                WARNF("Expected aggregate file size       = %lld", (long long) params->expectedAggFileSize);
+                                WARNF("Stat() of aggregate file size      = %lld", (long long) point->aggFileSizeFromStat);
+                                WARNF("Using actual aggregate bytes moved = %lld", (long long) point->aggFileSizeFromXfer);
                                 if(params->deadlineForStonewalling){
-                                  EWARN("Maybe caused by deadlineForStonewalling");
+                                  WARN("Maybe caused by deadlineForStonewalling");
                                 }
                         }
                 }
@@ -437,7 +439,7 @@ static int CountErrors(IOR_param_t * test, int access, int errors)
                                 WARN("overflow in errors counted");
                                 allErrors = -1;
                         }
-                        EWARNF("Incorrect data on %s (%d errors found).\n",
+                        WARNF("Incorrect data on %s (%d errors found).\n",
                                 access == WRITECHECK ? "write" : "read", allErrors);
                         fprintf(out_logfile,
                                 "Used Time Stamp %u (0x%x) for Data Signature\n",
@@ -550,7 +552,7 @@ char * GetPlatformName()
         struct utsname name;
 
         if (uname(&name) != 0) {
-                EWARN("cannot get platform name");
+                WARN("cannot get platform name");
                 sprintf(sysName, "%s", "Unknown");
                 sprintf(nodeName, "%s", "Unknown");
         } else {
@@ -874,9 +876,9 @@ static void InitTests(IOR_test_t *tests)
                         params->numTasks = mpiNumTasks;
                 } else if (params->numTasks > mpiNumTasks) {
                         if (rank == 0) {
-                                EWARNF("More tasks requested (%d) than available (%d),",
+                                WARNF("More tasks requested (%d) than available (%d),",
                                         params->numTasks, mpiNumTasks);
-                                EWARNF("         running with %d tasks.\n", mpiNumTasks);
+                                WARNF("         running with %d tasks.\n", mpiNumTasks);
                         }
                         params->numTasks = mpiNumTasks;
                 }
@@ -1193,7 +1195,7 @@ static void TestIoSys(IOR_test_t *test)
           GetTestFileName(testFileName, params);
           int ret = backend->stat(testFileName, & sb, params->backend_options);
           if(ret == 0) {
-            EWARNF("The file \"%s\" exists already and will be overwritten", testFileName);
+            WARNF("The file \"%s\" exists already and will be overwritten", testFileName);
           }
         }
 
@@ -1506,6 +1508,11 @@ static void ValidateTests(IOR_param_t * test, MPI_Comm com)
                 ERR("block/transfer size may not be smaller than IOR_size_t for NCMPI");
         if (((strcasecmp(test->api, "POSIX") != 0)
             && (strcasecmp(test->api, "MPIIO") != 0)
+            && (strcasecmp(test->api, "HDF5") != 0)
+            && (strcasecmp(test->api, "NCMPI") != 0)
+            && (strcasecmp(test->api, "DUMMY") != 0)
+            && (strcasecmp(test->api, "AIO") != 0)
+            && (strcasecmp(test->api, "PMDK") != 0)
             && (strcasecmp(test->api, "MMAP") != 0)
             && (strcasecmp(test->api, "HDFS") != 0)
             && (strcasecmp(test->api, "DFS") != 0)
@@ -1747,46 +1754,48 @@ static IOR_offset_t WriteOrRead(IOR_param_t *test, IOR_results_t *results,
           MPI_Barrier(test->testComm);
         }
 
-        for (i = 0; i < test->segmentCount && !hitStonewall; i++) {
-          if(randomPrefillBuffer && test->deadlineForStonewalling != 0){
-            // prefill the whole segment with data, this needs to be done collectively
-            double t_start = GetTimeStamp();
-            prefillSegment(test, randomPrefillBuffer, pretendRank, fd, ioBuffers, i, i+1);
-            MPI_Barrier(test->testComm);
-            if(rank == 0 && verbose > VERBOSE_1){
-              fprintf(out_logfile, "Random: synchronizing segment count with barrier and prefill took: %fs\n", GetTimeStamp() - t_start);
+        do{ // to ensure the benchmark runs a certain time
+          for (i = 0; i < test->segmentCount && !hitStonewall; i++) {
+            if(randomPrefillBuffer && test->deadlineForStonewalling != 0){
+              // prefill the whole segment with data, this needs to be done collectively
+              double t_start = GetTimeStamp();
+              prefillSegment(test, randomPrefillBuffer, pretendRank, fd, ioBuffers, i, i+1);
+              MPI_Barrier(test->testComm);
+              if(rank == 0 && verbose > VERBOSE_1){
+                fprintf(out_logfile, "Random: synchronizing segment count with barrier and prefill took: %fs\n", GetTimeStamp() - t_start);
+              }
             }
-          }
-          for (j = 0; j < offsets &&  !hitStonewall ; j++) {
-            IOR_offset_t offset;
-            if (test->randomOffset) {
-              if(test->filePerProc){
-                offset = offsets_rnd[j] + (i * test->blockSize);
+            for (j = 0; j < offsets &&  !hitStonewall ; j++) {
+              IOR_offset_t offset;
+              if (test->randomOffset) {
+                if(test->filePerProc){
+                  offset = offsets_rnd[j] + (i * test->blockSize);
+                }else{
+                  offset = offsets_rnd[j] + (i * test->numTasks * test->blockSize);
+                }
               }else{
-                offset = offsets_rnd[j] + (i * test->numTasks * test->blockSize);
+                offset = j * test->transferSize;
+                if (test->filePerProc) {
+                  offset += i * test->blockSize;
+                } else {
+                  offset += (i * test->numTasks * test->blockSize) + (pretendRank * test->blockSize);
+                }
               }
-            }else{
-              offset = j * test->transferSize;
-              if (test->filePerProc) {
-                offset += i * test->blockSize;
-              } else {
-                offset += (i * test->numTasks * test->blockSize) + (pretendRank * test->blockSize);
+              dataMoved += WriteOrReadSingle(offset, pretendRank, test->transferSize, & transferCount, & errors, test, fd, ioBuffers, access);
+              pairCnt++;
+
+              hitStonewall = ((test->deadlineForStonewalling != 0
+                  && (GetTimeStamp() - startForStonewall) > test->deadlineForStonewalling))
+                  || (test->stoneWallingWearOutIterations != 0 && pairCnt == test->stoneWallingWearOutIterations) ;
+
+              if ( test->collective && test->deadlineForStonewalling ) {
+                // if collective-mode, you'll get a HANG, if some rank 'accidentally' leave this loop
+                // it absolutely must be an 'all or none':
+                MPI_CHECK(MPI_Bcast(&hitStonewall, 1, MPI_INT, 0, testComm), "hitStonewall broadcast failed");
               }
-            }
-            dataMoved += WriteOrReadSingle(offset, pretendRank, test->transferSize, & transferCount, & errors, test, fd, ioBuffers, access);
-            pairCnt++;
-
-            hitStonewall = ((test->deadlineForStonewalling != 0
-                && (GetTimeStamp() - startForStonewall) > test->deadlineForStonewalling))
-                || (test->stoneWallingWearOutIterations != 0 && pairCnt == test->stoneWallingWearOutIterations) ;
-
-            if ( test->collective && test->deadlineForStonewalling ) {
-              // if collective-mode, you'll get a HANG, if some rank 'accidentally' leave this loop
-              // it absolutely must be an 'all or none':
-              MPI_CHECK(MPI_Bcast(&hitStonewall, 1, MPI_INT, 0, testComm), "hitStonewall broadcast failed");
             }
           }
-        }
+        } while((GetTimeStamp() - startForStonewall) < test->minTimeDuration);
         if (test->stoneWallingWearOut){
           if (verbose >= VERBOSE_1){
             fprintf(out_logfile, "%d: stonewalling pairs accessed: %lld\n", rank, (long long) pairCnt);
@@ -1818,6 +1827,7 @@ static IOR_offset_t WriteOrRead(IOR_param_t *test, IOR_results_t *results,
               i++;
             }
             for ( ; pairCnt < point->pairs_accessed; i++) {
+              if(i == test->segmentCount) i = 0; // wrap over, necessary to deal with minTimeDuration
               for ( ; j < offsets && pairCnt < point->pairs_accessed ; j++) {
                 IOR_offset_t offset;
                 if (test->randomOffset) {
@@ -1837,7 +1847,7 @@ static IOR_offset_t WriteOrRead(IOR_param_t *test, IOR_results_t *results,
                 dataMoved += WriteOrReadSingle(offset, pretendRank, test->transferSize, & transferCount, & errors, test, fd, ioBuffers, access);
                 pairCnt++;
               }
-              j = 0;
+              j = 0;              
             }
           }
         }else{

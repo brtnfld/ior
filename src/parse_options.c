@@ -95,7 +95,7 @@ void DecodeDirective(char *line, IOR_param_t *params, options_all_t * module_opt
                 if (initialized)
                     MPI_CHECK(MPI_Abort(MPI_COMM_WORLD, -1), "MPI_Abort() error");
                 else
-                    exit(-1);
+                    exit(EXIT_FAILURE);
         }
         if (strcasecmp(option, "api") == 0) {
           params->api = strdup(value);
@@ -103,7 +103,7 @@ void DecodeDirective(char *line, IOR_param_t *params, options_all_t * module_opt
           params->backend = aiori_select(params->api);
           if (params->backend == NULL){
             fprintf(out_logfile, "Could not load backend API %s\n", params->api);
-            exit(-1);
+            exit(EXIT_FAILURE);
           }
         } else if (strcasecmp(option, "summaryFile") == 0) {
           if (rank == 0){
@@ -164,6 +164,8 @@ void DecodeDirective(char *line, IOR_param_t *params, options_all_t * module_opt
                 params->stoneWallingStatusFile  = strdup(value);
         } else if (strcasecmp(option, "maxtimeduration") == 0) {
                 params->maxTimeDuration = atoi(value);
+        } else if (strcasecmp(option, "mintimeduration") == 0) {
+                params->minTimeDuration = atoi(value);
         } else if (strcasecmp(option, "outlierthreshold") == 0) {
                 params->outlierThreshold = atoi(value);
         } else if (strcasecmp(option, "numnodes") == 0) {
@@ -258,7 +260,7 @@ void DecodeDirective(char *line, IOR_param_t *params, options_all_t * module_opt
                   if (initialized)
                       MPI_CHECK(MPI_Abort(MPI_COMM_WORLD, -1), "MPI_Abort() error");
                   else
-                      exit(-1);
+                      exit(EXIT_FAILURE);
                 }
         }
 }
@@ -285,7 +287,7 @@ void ParseLine(char *line, IOR_param_t * test, options_all_t * module_options)
                 }
                 if(strlen(start) < 3){
                   fprintf(out_logfile, "Invalid option substring string: \"%s\" in \"%s\"\n", start, line);
-                  exit(1);
+                  exit(EXIT_FAILURE);
                 }
                 DecodeDirective(start, test, module_options);
                 start = end + 1;
@@ -431,6 +433,7 @@ option_help * createGlobalOptions(IOR_param_t * params){
     {.help="  -O stoneWallingWearOut=1           -- once the stonewalling timeout is over, all process finish to access the amount of data", .arg = OPTION_OPTIONAL_ARGUMENT},
     {.help="  -O stoneWallingWearOutIterations=N -- stop after processing this number of iterations, needed for reading data back written with stoneWallingWearOut", .arg = OPTION_OPTIONAL_ARGUMENT},
     {.help="  -O stoneWallingStatusFile=FILE     -- this file keeps the number of iterations from stonewalling during write and allows to use them for read", .arg = OPTION_OPTIONAL_ARGUMENT},
+    {.help="  -O minTimeDuration=0           -- minimum Runtime for the run (will repeat from beginning of the file if time is not yet over)", .arg = OPTION_OPTIONAL_ARGUMENT},
 #ifdef HAVE_CUDA
     {.help="  -O allocateBufferOnGPU=X           -- allocate I/O buffers on the GPU: X=1 uses managed memory, X=2 device memory.", .arg = OPTION_OPTIONAL_ARGUMENT},
     {.help="  -O GPUid=X                         -- select the GPU to use.", .arg = OPTION_OPTIONAL_ARGUMENT},
@@ -457,7 +460,7 @@ option_help * createGlobalOptions(IOR_param_t * params){
     {'M', NULL,        "memoryPerNode -- hog memory on the node  (e.g.: 2g, 75%)", OPTION_OPTIONAL_ARGUMENT, 's', & params->memoryPerNodeStr},
     {'N', NULL,        "numTasks -- number of tasks that are participating in the test (overrides MPI)", OPTION_OPTIONAL_ARGUMENT, 'd', & params->numTasks},
     {'o', NULL,        "testFile -- full name for test", OPTION_OPTIONAL_ARGUMENT, 's', & params->testFileName},
-    {'O', NULL,        "string of IOR directives (e.g. -O checkRead=1,lustreStripeCount=32)", OPTION_OPTIONAL_ARGUMENT, 'p', & decodeDirectiveWrapper},
+    {'O', NULL,        "string of IOR directives (e.g. -O checkRead=1,GPUid=2)", OPTION_OPTIONAL_ARGUMENT, 'p', & decodeDirectiveWrapper},
     {'Q', NULL,        "taskPerNodeOffset for read tests use with -C & -Z options (-C constant N, -Z at least N)", OPTION_OPTIONAL_ARGUMENT, 'd', & params->taskPerNodeOffset},
     {'r', NULL,        "readFile -- read existing file", OPTION_FLAG, 'd', & params->readFile},
     {'R', NULL,        "checkRead -- verify that the output of read matches the expected signature (used with -G)", OPTION_FLAG, 'd', & params->checkRead},

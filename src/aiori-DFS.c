@@ -633,11 +633,14 @@ DFS_Finalize(aiori_mod_opt_t *options)
 
 	if (o->destroy) {
                 if (rank == 0) {
-                        uuid_t uuid;
-
                         INFO(VERBOSE_1, "Destroying DFS Container: %s", o->cont);
+#if CHECK_DAOS_API_VERSION(1, 4)
+                        daos_cont_destroy(poh, o->cont, 1, NULL);
+#else
+                        uuid_t uuid;
                         uuid_parse(o->cont, uuid);
                         rc = daos_cont_destroy(poh, uuid, 1, NULL);
+#endif
                         DCHECK(rc, "Failed to destroy container %s", o->cont);
                 }
 
@@ -808,7 +811,7 @@ DFS_Xfer(int access, aiori_fd_t *file, IOR_size_t *buffer, IOR_offset_t length,
 
                 if (ret < remaining) {
                         if (hints->singleXferAttempt == TRUE)
-                                exit(-1);
+                                exit(EXIT_FAILURE);
                         if (xferRetries > MAX_RETRY)
                                 ERR("too many retries -- aborting");
                 }

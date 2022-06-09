@@ -132,7 +132,8 @@ AC_ARG_WITH([lustre],
                 [support configurable Lustre striping values @<:@default=check@:>@])],
         [], [with_lustre=check])
 AS_IF([test "x$with_lustre" = xyes ], [
-        AC_CHECK_HEADERS([linux/lustre/lustre_user.h lustre/lustre_user.h], [AC_DEFINE([HAVE_LUSTRE_USER], [], [Lustre user API available in some shape or form])], [
+        AC_CHECK_HEADERS([linux/lustre/lustre_user.h lustre/lustre_user.h],
+                [AC_DEFINE([HAVE_LUSTRE_USER], [], [Lustre user API available in some shape or form])], [
                 if test "x$with_lustre" != xcheck -a \
                         "x$ac_cv_header_linux_lustre_lustre_user_h" = "xno" -a \
                         "x$ac_cv_header_lustre_lustre_user_h" = "xno" ; then
@@ -151,6 +152,21 @@ AS_IF([test "x$with_lustre" = xyes ], [
 AM_CONDITIONAL([WITH_LUSTRE], [test x$with_lustre = xyes])
 AM_COND_IF([WITH_LUSTRE],[
         AC_DEFINE([WITH_LUSTRE], [], [Build wth LUSTRE backend])
+])
+
+# enable darshan profiling support
+AC_ARG_ENABLE(darshan,
+              AS_HELP_STRING([--enable-darshan], [Build with Darshan I/O profiler]),
+              [],
+              [enable_darshan=no])
+AS_IF([test "x$enable_darshan" != "xno"],[
+    AS_IF([test -d "$enable_darshan"],
+        [],
+        AC_MSG_ERROR(enableval for enable-darshan is required and must be a valid install prefix path for Darshan library)
+    )
+    LDFLAGS="$LDFLAGS -L${enable_darshan}/lib -Wl,-rpath=${enable_darshan}/lib -Wl,-no-as-needed"
+	AC_CHECK_LIB([darshan], [darshan_core_initialize], [],
+                   [AC_MSG_ERROR([Cannot find Darshan])])
 ])
 
 # IME (DDN's Infinite Memory Engine) support
@@ -328,6 +344,26 @@ if test x$with_gfarm != xno; then
   esac
   AC_CHECK_LIB([gfarm], [gfarm_initialize],, [AC_MSG_ERROR([libgfarm not found])])
   AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec])
+fi
+
+# CHFS support
+AC_MSG_CHECKING([for CHFS consistent hash file system])
+AC_ARG_WITH([chfs],
+  [AS_HELP_STRING([--with-chfs=CHFS_ROOT],
+    [support IO with CHFS backend @<:@default=no@:>@])],
+  [], [with_chfs=no])
+AC_MSG_RESULT([$with_chfs])
+AM_CONDITIONAL([USE_CHFS_AIORI], [test x$with_chfs != xno])
+if test x$with_chfs != xno; then
+  AC_DEFINE([USE_CHFS_AIORI], [], [Build CHFS backend AIORI])
+  case x$with_chfs in
+    xyes) ;;
+    *)
+    CPPFLAGS="$CPPFLAGS -I$with_chfs/include"
+    LDFLAGS="$LDFLAGS -L$with_chfs/lib -Wl,--enable-new-dtags -Wl,-rpath=$with_chfs/lib" ;;
+  esac
+  PKG_CHECK_MODULES([MARGO], [margo])
+  PKG_CHECK_MODULES([OPENSSL], [openssl])
 fi
 
 # aws4c is needed for the S3 backend (see --with-S3, below).

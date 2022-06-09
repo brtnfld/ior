@@ -32,14 +32,15 @@
  * NCMPI_CHECK will display a custom error message and then exit the program
  */
 #define NCMPI_CHECK(NCMPI_RETURN, MSG) do {                              \
+    int _NCMPI_RETURN = (NCMPI_RETURN);                                  \
                                                                          \
-    if (NCMPI_RETURN < 0) {                                              \
+    if (_NCMPI_RETURN != NC_NOERR) {                                     \
         fprintf(stdout, "** error **\n");                                \
         fprintf(stdout, "ERROR in %s (line %d): %s.\n",                  \
                 __FILE__, __LINE__, MSG);                                \
-        fprintf(stdout, "ERROR: %s.\n", ncmpi_strerror(NCMPI_RETURN));   \
+        fprintf(stdout, "ERROR: %s.\n", ncmpi_strerror(_NCMPI_RETURN));  \
         fprintf(stdout, "** exiting **\n");                              \
-        exit(-1);                                                        \
+        exit(EXIT_FAILURE);                                              \
     }                                                                    \
 } while(0)
 
@@ -68,8 +69,7 @@ static void NCMPI_xfer_hints(aiori_xfer_hint_t * params){
 }
 
 typedef struct {
-  int showHints;                   /* show hints */
-  char * hintsFileName;            /* full name for hints file */
+  mpiio_options_t mpio;
 
   /* runtime variables */
   int var_id;                      /* variable id handle for data set */
@@ -88,8 +88,11 @@ static option_help * NCMPI_options(aiori_mod_opt_t ** init_backend_options, aior
   *init_backend_options = (aiori_mod_opt_t*) o;
 
   option_help h [] = {
-    {0, "mpiio.hintsFileName","Full name for hints file", OPTION_OPTIONAL_ARGUMENT, 's', & o->hintsFileName},
-    {0, "mpiio.showHints",    "Show MPI hints", OPTION_FLAG, 'd', & o->showHints},
+    {0, "ncmpi.hintsFileName","Full name for hints file", OPTION_OPTIONAL_ARGUMENT, 's', & o->mpio.hintsFileName},
+    {0, "ncmpi.showHints",    "Show MPI hints", OPTION_FLAG, 'd', & o->mpio.showHints},
+    {0, "ncmpi.preallocate",   "Preallocate file size", OPTION_FLAG, 'd', & o->mpio.preallocate},
+    {0, "ncmpi.useStridedDatatype", "put strided access into datatype", OPTION_FLAG, 'd', & o->mpio.useStridedDatatype},
+    {0, "ncmpi.useFileView",  "Use MPI_File_set_view", OPTION_FLAG, 'd', & o->mpio.useFileView},
     LAST_OPTION
   };
   option_help * help = malloc(sizeof(h));
@@ -130,8 +133,8 @@ static aiori_fd_t *NCMPI_Create(char *testFileName, int iorflags, aiori_mod_opt_
         ncmpi_options_t * o = (ncmpi_options_t*) param;
 
         /* read and set MPI file hints from hintsFile */
-        SetHints(&mpiHints, o->hintsFileName);
-        if (rank == 0 && o->showHints) {
+        SetHints(&mpiHints, o->mpio.hintsFileName);
+        if (rank == 0 && o->mpio.showHints) {
                 fprintf(stdout, "\nhints passed to MPI_File_open() {\n");
                 ShowHints(&mpiHints);
                 fprintf(stdout, "}\n");
@@ -151,10 +154,9 @@ static aiori_fd_t *NCMPI_Create(char *testFileName, int iorflags, aiori_mod_opt_
 
 #if defined(PNETCDF_VERSION_MAJOR) && (PNETCDF_VERSION_MAJOR > 1 || PNETCDF_VERSION_MINOR >= 2)
         /* ncmpi_get_file_info is first available in 1.2.0 */
-        if (rank == 0 && o->showHints) {
+        if (rank == 0 && o->mpio.showHints) {
             MPI_Info info_used;
-            MPI_CHECK(ncmpi_get_file_info(*fd, &info_used),
-                      "cannot inquire file info");
+            NCMPI_CHECK(ncmpi_get_file_info(*fd, &info_used), "cannot inquire file info");
             /* print the MPI file hints currently used */
             fprintf(stdout, "\nhints returned from opened file {\n");
             ShowHints(&info_used);
@@ -177,8 +179,8 @@ static aiori_fd_t *NCMPI_Open(char *testFileName, int iorflags, aiori_mod_opt_t 
         ncmpi_options_t * o = (ncmpi_options_t*) param;
 
         /* read and set MPI file hints from hintsFile */
-        SetHints(&mpiHints, o->hintsFileName);
-        if (rank == 0 && o->showHints) {
+        SetHints(&mpiHints, o->mpio.hintsFileName);
+        if (rank == 0 && o->mpio.showHints) {
                 fprintf(stdout, "\nhints passed to MPI_File_open() {\n");
                 ShowHints(&mpiHints);
                 fprintf(stdout, "}\n");
@@ -198,7 +200,7 @@ static aiori_fd_t *NCMPI_Open(char *testFileName, int iorflags, aiori_mod_opt_t 
 
 #if defined(PNETCDF_VERSION_MAJOR) && (PNETCDF_VERSION_MAJOR > 1 || PNETCDF_VERSION_MINOR >= 2)
         /* ncmpi_get_file_info is first available in 1.2.0 */
-        if (rank == 0 && o->showHints) {
+        if (rank == 0 && o->mpio.showHints) {
             MPI_Info info_used;
             MPI_CHECK(ncmpi_get_file_info(*fd, &info_used),
                       "cannot inquire file info");
@@ -335,6 +337,7 @@ static IOR_offset_t NCMPI_Xfer(int access, aiori_fd_t *fd, IOR_size_t * buffer, 
  */
 static void NCMPI_Fsync(aiori_fd_t *fd, aiori_mod_opt_t * param)
 {
+        NCMPI_CHECK(ncmpi_sync(*(int *)fd), "cannot sync file");
 }
 
 /*
@@ -342,10 +345,6 @@ static void NCMPI_Fsync(aiori_fd_t *fd, aiori_mod_opt_t * param)
  */
 static void NCMPI_Close(aiori_fd_t *fd, aiori_mod_opt_t * param)
 {
-        if (hints->collective == FALSE) {
-                NCMPI_CHECK(ncmpi_end_indep_data(*(int *)fd),
-                            "cannot disable independent data mode");
-        }
         NCMPI_CHECK(ncmpi_close(*(int *)fd), "cannot close file");
         free(fd);
 }
@@ -355,7 +354,7 @@ static void NCMPI_Close(aiori_fd_t *fd, aiori_mod_opt_t * param)
  */
 static void NCMPI_Delete(char *testFileName, aiori_mod_opt_t * param)
 {
-        return(MPIIO_Delete(testFileName, param));
+        NCMPI_CHECK(ncmpi_delete(testFileName, MPI_INFO_NULL), "cannot delete file");
 }
 
 /*
@@ -394,14 +393,14 @@ static int GetFileMode(int flags)
             WARN("Exclusive access not implemented in NCMPI");
         }
         if (flags & IOR_TRUNC) {
-            WARN("File truncation not implemented in NCMPI");
+                fd_mode |= NC_CLOBBER;
         }
         if (flags & IOR_DIRECT) {
             WARN("O_DIRECT not implemented in NCMPI");
         }
 
-        /* to enable > 4GB file size */
-        fd_mode |= NC_64BIT_OFFSET;
+        /* to enable > 4GB variable size */
+        fd_mode |= NC_64BIT_DATA;
 
         return (fd_mode);
 }
