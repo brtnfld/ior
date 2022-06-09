@@ -15,6 +15,7 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+
 #include <stdio.h>              /* only for fprintf() */
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -35,6 +36,7 @@
 #include "H5FDsubfiling.h" /* Private header for the subfiling VFD */
 #include "H5FDioc.h"
 #endif
+
 /******************************************************************************/
 /*
  * HDF5_CHECK will display a custom error message and then exit the program
@@ -184,24 +186,10 @@ static void HDF5_init_xfer_options(aiori_xfer_hint_t * params){
 
 static int HDF5_check_params(aiori_mod_opt_t * options){
   HDF5_options_t *o = (HDF5_options_t*) options;
-#if 0
   if (o->setAlignment < 0)
       ERR("alignment must be non-negative integer");
   if (o->individualDataSets)
       ERR("individual data sets not implemented");
-#endif
-  if (o->noFill) {
-    /* check if hdf5 available */
-#if defined (H5_VERS_MAJOR) && defined (H5_VERS_MINOR)
-    /* no-fill option not available until hdf5-1.6.x */
-#if (H5_VERS_MAJOR > 0 && H5_VERS_MINOR > 5)
-#else
-    ERR("'no fill' option not available in HDF5");
-#endif
-#else
-    WARN("unable to determine HDF5 version for 'no fill' usage");
-#endif
-  }
   return 0;
 }
 
@@ -231,10 +219,8 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         MPI_Info mpiHints = MPI_INFO_NULL;
 
         fd = (hid_t *) malloc(sizeof(hid_t));
-#if 0
         if (fd == NULL)
                 ERR("malloc() failed");
-#endif
         /*
          * HDF5 uses different flags than those for POSIX/MPIIO
          */
@@ -300,7 +286,7 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         char* SUBF = getenv("SUBF");
         if(SUBF) {
               HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, NULL),
-                         "cannot set file access property list");
+                   "cannot set file access property list");
         } else 
               HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
                    "cannot set file access property list");
@@ -323,8 +309,8 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         /* open file */
         if(! hints->dryRun){
           if (flags & IOR_CREAT) {     /* WRITE */
-               //   *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, createPropList, accessPropList);
-                  *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, H5P_DEFAULT, accessPropList); 
+                  *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, createPropList, accessPropList);
+                  //MSB *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, H5P_DEFAULT, accessPropList);
                   HDF5_CHECK(*fd, "cannot create file");
           } else {                /* READ or CHECK */
                   *fd = H5Fopen(testFileName, fd_mode, accessPropList);
