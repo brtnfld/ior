@@ -199,7 +199,10 @@ int ior_main(int argc, char **argv)
     int required = MPI_THREAD_MULTIPLE;
     int provided = 0;
     MPI_CHECK(MPI_Init_thread(&argc, &argv, required, &provided), "cannot initialize MPI"); 
-
+    if (provided < required) {
+	printf("MPI_THREAD_MULTIPLE not supported\n");
+	MPI_Abort(MPI_COMM_WORLD, -1);
+    }
     MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank), "cannot get rank");
 
     /* set error-handling */

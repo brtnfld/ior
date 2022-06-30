@@ -285,6 +285,8 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         }
         char* SUBF = getenv("SUBF");
         if(SUBF) {
+              HDF5_CHECK(H5Pset_mpi_params(accessPropList, comm, mpiHints),
+                   "cannot set mpi parameters");
               HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, NULL),
                    "cannot set file access property list");
         } else 
