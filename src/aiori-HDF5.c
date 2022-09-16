@@ -308,7 +308,7 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                    "cannot set file access property list");
 
         /* set alignment */
-        HDF5_CHECK(H5Pset_alignment(accessPropList, o->setAlignment, o->setAlignment),
+        HDF5_CHECK(H5Pset_alignment(accessPropList, 0, o->setAlignment),
                    "cannot set alignment");
 
 #ifdef HAVE_H5PSET_ALL_COLL_METADATA_OPS
