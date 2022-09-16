@@ -31,7 +31,6 @@
 
 #define NUM_DIMS 1              /* number of dimensions to data set */
 
-#define H5_HAVE_SUBFILING_VFD
 #ifdef H5_HAVE_SUBFILING_VFD
 #include "H5FDsubfiling.h" /* Private header for the subfiling VFD */
 #include "H5FDioc.h"
@@ -289,6 +288,21 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                    "cannot set mpi parameters");
               HDF5_CHECK(H5Pset_fapl_subfiling(accessPropList, NULL),
                    "cannot set file access property list");
+
+              H5FD_subfiling_config_t  subf_config;
+              H5FD_ioc_config_t        ioc_config;
+
+              H5Pget_fapl_subfiling(accessPropList, &subf_config);
+              H5Pget_fapl_ioc(accessPropList, &ioc_config);
+
+              if (rank == 0) {
+                      fprintf(stdout, "\n Subfiling Parameters \n");
+                      fprintf(stdout, " ----------------------\n");
+                      fprintf(stdout, "Stripe Size:      %ld\n",subf_config.shared_cfg.stripe_size);
+                      fprintf(stdout, "Stripe Count:     %ld\n",subf_config.shared_cfg.stripe_count);
+                      fprintf(stdout, "Thread Pool Size: %ld\n",ioc_config.thread_pool_size);
+              }
+
         } else 
               HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
                    "cannot set file access property list");
