@@ -85,20 +85,25 @@
     }                                                                    \
 } while(0)
 #endif                          /* H5_VERS_MAJOR > 1 && H5_VERS_MINOR > 6 */
+
 /**************************** P R O T O T Y P E S *****************************/
 
 static IOR_offset_t SeekOffset(void *, IOR_offset_t, aiori_mod_opt_t *);
-static void SetupDataSet(void *, int flags, aiori_mod_opt_t *);
 static aiori_fd_t *HDF5_Create(char *, int flags, aiori_mod_opt_t *);
 static aiori_fd_t *HDF5_Open(char *, int flags, aiori_mod_opt_t *);
 static IOR_offset_t HDF5_Xfer(int, aiori_fd_t *, IOR_size_t *,
-                           IOR_offset_t, IOR_offset_t, aiori_mod_opt_t *);
+                              IOR_offset_t, IOR_offset_t, aiori_mod_opt_t *);
 static void HDF5_Close(aiori_fd_t *, aiori_mod_opt_t *);
 static void HDF5_Delete(char *, aiori_mod_opt_t *);
 static char* HDF5_GetVersion();
 static void HDF5_Fsync(aiori_fd_t *, aiori_mod_opt_t *);
 static IOR_offset_t HDF5_GetFileSize(aiori_mod_opt_t *, char *);
+static int HDF5_StatFS(const char *, ior_aiori_statfs_t *, aiori_mod_opt_t *);
+static int HDF5_MkDir(const char *, mode_t, aiori_mod_opt_t *);
+static int HDF5_RmDir(const char *, aiori_mod_opt_t *);
 static int HDF5_Access(const char *, int, aiori_mod_opt_t *);
+static int HDF5_Stat(const char *, struct stat *, aiori_mod_opt_t *);
+static void HDF5_Finalize(aiori_mod_opt_t *);
 static void HDF5_init_xfer_options(aiori_xfer_hint_t * params);
 static int HDF5_check_params(aiori_mod_opt_t * options);
 
@@ -110,6 +115,7 @@ typedef struct{
   int individualDataSets;          /* datasets not shared by all procs */
   int noFill;                      /* no fill in file creation */
   IOR_offset_t setAlignment;       /* alignment in bytes */
+  int chunk_size;
 } HDF5_options_t;
 /***************************** F U N C T I O N S ******************************/
 
@@ -123,6 +129,8 @@ static option_help * HDF5_options(aiori_mod_opt_t ** init_backend_options, aiori
     /* initialize the options properly */
     o->collective_md = 0;
     o->setAlignment = 1;
+    o->chunk_size = 0;
+    o->mpio.hintsFileName = NULL;
   }
 
   *init_backend_options = (aiori_mod_opt_t*) o;
@@ -136,6 +144,7 @@ static option_help * HDF5_options(aiori_mod_opt_t ** init_backend_options, aiori
     {0, "hdf5.individualDataSets",        "Datasets not shared by all procs [not working]", OPTION_FLAG, 'd', & o->individualDataSets},
     {0, "hdf5.setAlignment",        "HDF5 alignment in bytes (e.g.: 8, 4k, 2m, 1g)", OPTION_OPTIONAL_ARGUMENT, 'd', & o->setAlignment},
     {0, "hdf5.noFill", "No fill in HDF5 file creation", OPTION_FLAG, 'd', & o->noFill},
+    {0, "hdf5.chunkSize", "Chunk size (in terms of dataset elements) to use for I/O", OPTION_FLAG, 'd', & o->chunk_size},
     LAST_OPTION
   };
   option_help * help = malloc(sizeof(h));
@@ -158,21 +167,29 @@ ior_aiori_t hdf5_aiori = {
         .xfer_hints = HDF5_init_xfer_options,
         .fsync = HDF5_Fsync,
         .get_file_size = HDF5_GetFileSize,
-        .statfs = aiori_posix_statfs,
-        .mkdir = aiori_posix_mkdir,
-        .rmdir = aiori_posix_rmdir,
+        .statfs = HDF5_StatFS,
+        .mkdir = HDF5_MkDir,
+        .rmdir = HDF5_RmDir,
         .access = HDF5_Access,
-        .stat = aiori_posix_stat,
+        .stat = HDF5_Stat,
+        .finalize = HDF5_Finalize,
         .get_options = HDF5_options,
         .check_params = HDF5_check_params
 };
 
-static hid_t xferPropList;      /* xfer property list */
-hid_t dataSet;                  /* data set id */
-hid_t dataSpace;                /* data space id */
-hid_t fileDataSpace;            /* file data space id */
-hid_t memDataSpace;             /* memory data space id */
-int newlyOpenedFile;            /* newly opened file */
+typedef struct{
+  hid_t fd;
+  hid_t xferPropList;             /* xfer property list */
+  hid_t dataSet;                  /* data set id */
+  hid_t dataSpace;                /* data space id */
+  hid_t fileDataSpace;            /* file data space id */
+  hid_t memDataSpace;             /* memory data space id */
+  int newlyOpenedFile;            /* newly opened file */  
+  int firstReadCheck;
+  int startNewDataSet;
+} aiori_h5fd_t;
+
+static void SetupDataSet(aiori_h5fd_t *, int flags, aiori_mod_opt_t *);
 
 /***************************** F U N C T I O N S ******************************/
 static aiori_xfer_hint_t * hints = NULL;
@@ -213,13 +230,10 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
             memCount[NUM_DIMS], memBlock[NUM_DIMS], memDataSpaceDims[NUM_DIMS];
         int tasksPerDataSet;
         unsigned fd_mode = (unsigned)0;
-        hid_t *fd;
+        aiori_h5fd_t * fd = safeMalloc(sizeof(aiori_h5fd_t));
         MPI_Comm comm;
         MPI_Info mpiHints = MPI_INFO_NULL;
 
-        fd = (hid_t *) malloc(sizeof(hid_t));
-        if (fd == NULL)
-                ERR("malloc() failed");
         /*
          * HDF5 uses different flags than those for POSIX/MPIIO
          */
@@ -310,19 +324,18 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         /* open file */
         if(! hints->dryRun){
           if (flags & IOR_CREAT) {     /* WRITE */
-                  *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, createPropList, accessPropList);
-                  //MSB *fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, H5P_DEFAULT, accessPropList);
-                  HDF5_CHECK(*fd, "cannot create file");
+                  fd->fd = H5Fcreate(testFileName, H5F_ACC_TRUNC, createPropList, accessPropList);
+                  HDF5_CHECK(fd->fd, "cannot create file");
           } else {                /* READ or CHECK */
-                  *fd = H5Fopen(testFileName, fd_mode, accessPropList);
-                  HDF5_CHECK(*fd, "cannot open file");
+                  fd->fd = H5Fopen(testFileName, fd_mode, accessPropList);
+                  HDF5_CHECK(fd->fd, "cannot open file");
           }
         }
 
         /* show hints actually attached to file handle */
         if (o->mpio.showHints) {
                 MPI_File *fd_mpiio;
-                HDF5_CHECK(H5Fget_vfd_handle(*fd, accessPropList, (void **) &fd_mpiio), "cannot get file handle");
+                HDF5_CHECK(H5Fget_vfd_handle(fd->fd, accessPropList, (void **) &fd_mpiio), "cannot get file handle");
                 MPI_Info info_used;
                 MPI_CHECK(MPI_File_get_info(*fd_mpiio, &info_used), "cannot get file info");
                 if (rank == 0) {
@@ -336,7 +349,7 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
 
         /* this is necessary for resetting various parameters
            needed for reopening and checking the file */
-        newlyOpenedFile = TRUE;
+        fd->newlyOpenedFile = TRUE;
 
         HDF5_CHECK(H5Pclose(createPropList),
                    "cannot close creation property list");
@@ -344,16 +357,16 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
                    "cannot close access property list");
 
         /* create property list for serial/parallel access */
-        xferPropList = H5Pcreate(H5P_DATASET_XFER);
-        HDF5_CHECK(xferPropList, "cannot create transfer property list");
+        fd->xferPropList = H5Pcreate(H5P_DATASET_XFER);
+        HDF5_CHECK(fd->xferPropList, "cannot create transfer property list");
 
         /* set data transfer mode */
         if (hints->collective) {
-                HDF5_CHECK(H5Pset_dxpl_mpio(xferPropList, H5FD_MPIO_COLLECTIVE),
+                HDF5_CHECK(H5Pset_dxpl_mpio(fd->xferPropList, H5FD_MPIO_COLLECTIVE),
                            "cannot set collective data transfer mode");
         } else {
                 HDF5_CHECK(H5Pset_dxpl_mpio
-                           (xferPropList, H5FD_MPIO_INDEPENDENT),
+                           (fd->xferPropList, H5FD_MPIO_INDEPENDENT),
                            "cannot set independent data transfer mode");
         }
 
@@ -363,11 +376,11 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
         memStride[0] = (hsize_t) (hints->transferSize / sizeof(IOR_size_t));
         memBlock[0] = (hsize_t) (hints->transferSize / sizeof(IOR_size_t));
         memDataSpaceDims[0] = (hsize_t) hints->transferSize;
-        memDataSpace = H5Screate_simple(NUM_DIMS, memDataSpaceDims, NULL);
-        HDF5_CHECK(memDataSpace, "cannot create simple memory data space");
+        fd->memDataSpace = H5Screate_simple(NUM_DIMS, memDataSpaceDims, NULL);
+        HDF5_CHECK(fd->memDataSpace, "cannot create simple memory data space");
 
         /* define hyperslab for memory data space */
-        HDF5_CHECK(H5Sselect_hyperslab(memDataSpace, H5S_SELECT_SET,
+        HDF5_CHECK(H5Sselect_hyperslab(fd->memDataSpace, H5S_SELECT_SET,
                                        memStart, memStride, memCount,
                                        memBlock), "cannot create hyperslab");
 
@@ -388,8 +401,8 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
 
         /* create a simple data space containing information on size
            and shape of data set, and open it for access */
-        dataSpace = H5Screate_simple(NUM_DIMS, dataSetDims, NULL);
-        HDF5_CHECK(dataSpace, "cannot create simple data space");
+        fd->dataSpace = H5Screate_simple(NUM_DIMS, dataSetDims, NULL);
+        HDF5_CHECK(fd->dataSpace, "cannot create simple data space");
         if (mpiHints != MPI_INFO_NULL)
                 MPI_Info_free(&mpiHints);
 
@@ -399,11 +412,11 @@ static aiori_fd_t *HDF5_Open(char *testFileName, int flags, aiori_mod_opt_t * pa
 /*
  * Write or read access to file using the HDF5 interface.
  */
-static IOR_offset_t HDF5_Xfer(int access, aiori_fd_t *fd, IOR_size_t * buffer,
+static IOR_offset_t HDF5_Xfer(int access, aiori_fd_t *afd, IOR_size_t * buffer,
                               IOR_offset_t length, IOR_offset_t offset, aiori_mod_opt_t * param)
 {
-        static int firstReadCheck = FALSE, startNewDataSet;
         IOR_offset_t segmentPosition, segmentSize;
+        aiori_h5fd_t * fd = (aiori_h5fd_t *) afd;
 
         /*
          * this toggle is for the read check operation, which passes through
@@ -411,10 +424,10 @@ static IOR_offset_t HDF5_Xfer(int access, aiori_fd_t *fd, IOR_size_t * buffer,
          * only on the first read check and close only on the second
          */
         if (access == READCHECK) {
-                if (firstReadCheck == TRUE) {
-                        firstReadCheck = FALSE;
+                if (fd->firstReadCheck == TRUE) {
+                        fd->firstReadCheck = FALSE;
                 } else {
-                        firstReadCheck = TRUE;
+                        fd->firstReadCheck = TRUE;
                 }
         }
 
@@ -434,9 +447,9 @@ static IOR_offset_t HDF5_Xfer(int access, aiori_fd_t *fd, IOR_size_t * buffer,
                  * ordinarily start a new data set, unless this is the
                  * second pass through during a read check
                  */
-                startNewDataSet = TRUE;
-                if (access == READCHECK && firstReadCheck != TRUE) {
-                        startNewDataSet = FALSE;
+                fd->startNewDataSet = TRUE;
+                if (access == READCHECK && fd->firstReadCheck != TRUE) {
+                        fd->startNewDataSet = FALSE;
                 }
         }
 
@@ -444,11 +457,11 @@ static IOR_offset_t HDF5_Xfer(int access, aiori_fd_t *fd, IOR_size_t * buffer,
           return length;
 
         /* create new data set */
-        if (startNewDataSet == TRUE) {
+        if (fd->startNewDataSet == TRUE) {
                 /* if just opened this file, no data set to close yet */
-                if (newlyOpenedFile != TRUE) {
-                        HDF5_CHECK(H5Dclose(dataSet), "cannot close data set");
-                        HDF5_CHECK(H5Sclose(fileDataSpace),
+                if (fd->newlyOpenedFile != TRUE) {
+                        HDF5_CHECK(H5Dclose(fd->dataSet), "cannot close data set");
+                        HDF5_CHECK(H5Sclose(fd->fileDataSpace),
                                    "cannot close file data space");
                 }
                 SetupDataSet(fd, access == WRITE ? IOR_CREAT : IOR_RDWR, param);
@@ -457,19 +470,19 @@ static IOR_offset_t HDF5_Xfer(int access, aiori_fd_t *fd, IOR_size_t * buffer,
         SeekOffset(fd, offset, param);
 
         /* this is necessary to reset variables for reaccessing file */
-        startNewDataSet = FALSE;
-        newlyOpenedFile = FALSE;
+        fd->startNewDataSet = FALSE;
+        fd->newlyOpenedFile = FALSE;
 
         /* access the file */
         if (access == WRITE) {  /* WRITE */
-                HDF5_CHECK(H5Dwrite(dataSet, H5T_NATIVE_LLONG,
-                                    memDataSpace, fileDataSpace,
-                                    xferPropList, buffer),
+                HDF5_CHECK(H5Dwrite(fd->dataSet, H5T_NATIVE_LLONG,
+                                    fd->memDataSpace, fd->fileDataSpace,
+                                    fd->xferPropList, buffer),
                            "cannot write to data set");
         } else {                /* READ or CHECK */
-                HDF5_CHECK(H5Dread(dataSet, H5T_NATIVE_LLONG,
-                                   memDataSpace, fileDataSpace,
-                                   xferPropList, buffer),
+                HDF5_CHECK(H5Dread(fd->dataSet, H5T_NATIVE_LLONG,
+                                   fd->memDataSpace, fd->fileDataSpace,
+                                   fd->xferPropList, buffer),
                            "cannot read from data set");
         }
         return (length);
@@ -478,30 +491,32 @@ static IOR_offset_t HDF5_Xfer(int access, aiori_fd_t *fd, IOR_size_t * buffer,
 /*
  * Perform fsync().
  */
-static void HDF5_Fsync(aiori_fd_t *fd, aiori_mod_opt_t * param)
+static void HDF5_Fsync(aiori_fd_t *afd, aiori_mod_opt_t * param)
 {
-        HDF5_CHECK(H5Fflush(*(hid_t *) fd, H5F_SCOPE_LOCAL), "cannot flush file to disk");
+  aiori_h5fd_t * fd = (aiori_h5fd_t *) afd;
+  HDF5_CHECK(H5Fflush(fd->fd, H5F_SCOPE_LOCAL), "cannot flush file to disk");
 }
 
 /*
  * Close a file through the HDF5 interface.
  */
-static void HDF5_Close(aiori_fd_t *fd, aiori_mod_opt_t * param)
+static void HDF5_Close(aiori_fd_t *afd, aiori_mod_opt_t * param)
 {
-        if(hints->dryRun)
-          return;
-        //if (hints->fd_fppReadCheck == NULL) {
-                HDF5_CHECK(H5Dclose(dataSet), "cannot close data set");
-                HDF5_CHECK(H5Sclose(dataSpace), "cannot close data space");
-                HDF5_CHECK(H5Sclose(fileDataSpace),
-                           "cannot close file data space");
-                HDF5_CHECK(H5Sclose(memDataSpace),
-                           "cannot close memory data space");
-                HDF5_CHECK(H5Pclose(xferPropList),
-                           " cannot close transfer property list");
-        //}
-        HDF5_CHECK(H5Fclose(*(hid_t *) fd), "cannot close file");
-        free(fd);
+    aiori_h5fd_t * fd = (aiori_h5fd_t *) afd;
+    if(hints->dryRun)
+      return;
+    //if (hints->fd_fppReadCheck == NULL) {
+            HDF5_CHECK(H5Dclose(fd->dataSet), "cannot close data set");
+            HDF5_CHECK(H5Sclose(fd->dataSpace), "cannot close data space");
+            HDF5_CHECK(H5Sclose(fd->fileDataSpace),
+                       "cannot close file data space");
+            HDF5_CHECK(H5Sclose(fd->memDataSpace),
+                       "cannot close memory data space");
+            HDF5_CHECK(H5Pclose(fd->xferPropList),
+                       " cannot close transfer property list");
+    //}
+    HDF5_CHECK(H5Fclose(fd->fd), "cannot close file");
+    free(fd);
 }
 
 /*
@@ -509,10 +524,33 @@ static void HDF5_Close(aiori_fd_t *fd, aiori_mod_opt_t * param)
  */
 static void HDF5_Delete(char *testFileName, aiori_mod_opt_t * param)
 {
-  if(hints->dryRun)
-    return
-  MPIIO_Delete(testFileName, param);
-  return;
+#ifdef HAVE_H5FDELETE
+        hid_t accessPropList;
+        MPI_Comm comm = MPI_COMM_SELF; /* Ony one rank accesses the file */
+        MPI_Info mpiHints = MPI_INFO_NULL;
+#endif
+
+        if(hints->dryRun)
+                return;
+
+#ifdef HAVE_H5FDELETE
+        /* set up file access property list */
+        accessPropList = H5Pcreate(H5P_FILE_ACCESS);
+        HDF5_CHECK(accessPropList, "cannot create file access property list");
+
+        HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
+                   "cannot set file access property list");
+
+        HDF5_CHECK(H5Fdelete(testFileName, accessPropList),
+                   "cannot delete file");
+
+        HDF5_CHECK(H5Pclose(accessPropList),
+                   "cannot close access property list");
+#else
+        MPIIO_Delete(testFileName, NULL);
+#endif
+
+        return;
 }
 
 /*
@@ -520,8 +558,8 @@ static void HDF5_Delete(char *testFileName, aiori_mod_opt_t * param)
  */
 static char * HDF5_GetVersion()
 {
-  static char version[1024] = {0};
-  if(version[0]) return version;
+        static char version[1024] = {0};
+        if(version[0]) return version;
 
         unsigned major, minor, release;
         if (H5get_libversion(&major, &minor, &release) < 0) {
@@ -540,49 +578,45 @@ static char * HDF5_GetVersion()
 /*
  * Seek to offset in file using the HDF5 interface and set up hyperslab.
  */
-static IOR_offset_t SeekOffset(void *fd, IOR_offset_t offset,
+static IOR_offset_t SeekOffset(void *afd, IOR_offset_t offset,
                                             aiori_mod_opt_t * param)
 {
-        HDF5_options_t *o = (HDF5_options_t*) param;
-        IOR_offset_t segmentSize;
-        hsize_t hsStride[NUM_DIMS], hsCount[NUM_DIMS], hsBlock[NUM_DIMS];
-        hsize_t hsStart[NUM_DIMS];
+    aiori_h5fd_t * fd = (aiori_h5fd_t *) afd;
+    HDF5_options_t *o = (HDF5_options_t*) param;
+    IOR_offset_t segmentSize;
+    hsize_t hsStride[NUM_DIMS], hsCount[NUM_DIMS], hsBlock[NUM_DIMS];
+    hsize_t hsStart[NUM_DIMS];
 
-        if (hints->filePerProc == TRUE) {
-                segmentSize = (IOR_offset_t) hints->blockSize;
-        } else {
-                segmentSize =
-                    (IOR_offset_t) (hints->numTasks) * hints->blockSize;
-        }
+    if (hints->filePerProc == TRUE) {
+            segmentSize = (IOR_offset_t) hints->blockSize;
+    } else {
+            segmentSize = (IOR_offset_t) (hints->numTasks) * hints->blockSize;
+    }
 
-        /* create a hyperslab representing the file data space */
-        if (o->individualDataSets) {
-                /* start at zero offset if not */
-                hsStart[0] = (hsize_t) ((offset % hints->blockSize)
-                                        / sizeof(IOR_size_t));
-        } else {
-                /* start at a unique offset if shared */
-                hsStart[0] =
-                    (hsize_t) ((offset % segmentSize) / sizeof(IOR_size_t));
-        }
-        hsCount[0] = (hsize_t) 1;
-        hsStride[0] = (hsize_t) (hints->transferSize / sizeof(IOR_size_t));
-        hsBlock[0] = (hsize_t) (hints->transferSize / sizeof(IOR_size_t));
+    /* create a hyperslab representing the file data space */
+    if (o->individualDataSets) {
+            /* start at zero offset if not */
+            hsStart[0] = (hsize_t) ((offset % hints->blockSize) / sizeof(IOR_size_t));
+    } else {
+            /* start at a unique offset if shared */
+            hsStart[0] = (hsize_t) ((offset % segmentSize) / sizeof(IOR_size_t));
+    }
+    hsCount[0] = (hsize_t) 1;
+    hsStride[0] = (hsize_t) (hints->transferSize / sizeof(IOR_size_t));
+    hsBlock[0] = (hsize_t) (hints->transferSize / sizeof(IOR_size_t));
 
-        /* retrieve data space from data set for hyperslab */
-        fileDataSpace = H5Dget_space(dataSet);
-        HDF5_CHECK(fileDataSpace, "cannot get data space from data set");
-        HDF5_CHECK(H5Sselect_hyperslab(fileDataSpace, H5S_SELECT_SET,
-                                       hsStart, hsStride, hsCount, hsBlock),
-                   "cannot select hyperslab");
-        return (offset);
+    /* select hyperslab in file data space */
+    HDF5_CHECK(H5Sselect_hyperslab(fd->fileDataSpace, H5S_SELECT_SET, hsStart, hsStride, hsCount, hsBlock),
+               "cannot select hyperslab");
+    return (offset);
 }
 
 /*
  * Create HDF5 data set.
  */
-static void SetupDataSet(void *fd, int flags, aiori_mod_opt_t * param)
+static void SetupDataSet(aiori_h5fd_t *fd, int flags, aiori_mod_opt_t * param)
 {
+  
         HDF5_options_t *o = (HDF5_options_t*) param;
         char dataSetName[MAX_STR];
         hid_t dataSetPropList;
@@ -590,10 +624,9 @@ static void SetupDataSet(void *fd, int flags, aiori_mod_opt_t * param)
         static int dataSetSuffix = 0;
 
         /* may want to use an extendable dataset (H5S_UNLIMITED) someday */
-        /* may want to use a chunked dataset (H5S_CHUNKED) someday */
 
         /* need to reset suffix counter if newly-opened file */
-        if (newlyOpenedFile)
+        if (fd->newlyOpenedFile)
                 dataSetSuffix = 0;
 
         /* may want to use individual access to each data set someday */
@@ -607,8 +640,22 @@ static void SetupDataSet(void *fd, int flags, aiori_mod_opt_t * param)
                 dataSetSuffix++);
 
         if (flags & IOR_CREAT) {     /* WRITE */
+                hsize_t chunk_dims[NUM_DIMS];
+
                 /* create data set */
                 dataSetPropList = H5Pcreate(H5P_DATASET_CREATE);
+
+                /* Set chunk size */
+                if (o->chunk_size > 0) {
+                    int i;
+
+                    for (i = 0; i < NUM_DIMS; i++)
+                            chunk_dims[i] = o->chunk_size;
+
+                    HDF5_CHECK(H5Pset_chunk(dataSetPropList, NUM_DIMS, chunk_dims),
+                        "cannot set chunk size");
+                }
+
                 if (o->noFill == TRUE) {
                         if (rank == 0 && verbose >= VERBOSE_1) {
                                 fprintf(stdout, "\nusing 'no fill' option\n");
@@ -617,33 +664,210 @@ static void SetupDataSet(void *fd, int flags, aiori_mod_opt_t * param)
                                                     H5D_FILL_TIME_NEVER),
                                    "cannot set fill time for property list");
                 }
-                dataSet =
-                    H5Dcreate(*(hid_t *) fd, dataSetName, H5T_NATIVE_LLONG,
-                              dataSpace, dataSetPropList);
-                HDF5_CHECK(dataSet, "cannot create data set");
+                fd->dataSet = H5Dcreate(fd->fd, dataSetName, H5T_NATIVE_LLONG, fd->dataSpace, dataSetPropList);
+                HDF5_CHECK(fd->dataSet, "cannot create data set");
         } else {                /* READ or CHECK */
-                dataSet = H5Dopen(*(hid_t *) fd, dataSetName);
-                HDF5_CHECK(dataSet, "cannot create data set");
+                fd->dataSet = H5Dopen(*(hid_t *) fd, dataSetName);
+                HDF5_CHECK(fd->dataSet, "cannot open data set");
         }
+
+        /* retrieve data space from data set for hyperslab */
+        fd->fileDataSpace = H5Dget_space(fd->dataSet);
+        HDF5_CHECK(fd->fileDataSpace, "cannot get data space from data set");
+}
+
+static IOR_offset_t HDF5_GetFileSize(aiori_mod_opt_t * test, char *testFileName)
+{
+        /* Ensure that non-native VOLs do not use MPIIO_GetFileSize() */
+#ifdef HAVE_H5PGET_VOL_ID
+        hid_t vol_id, accessPropList;
+#endif
+        IOR_offset_t ret;
+
+        if(hints->dryRun)
+                return 0;
+
+#ifdef HAVE_H5PGET_VOL_ID
+        /* set up file access property list */
+        accessPropList = H5Pcreate(H5P_FILE_ACCESS);
+        HDF5_CHECK(accessPropList, "cannot create file access property list");
+        HDF5_CHECK(H5Pget_vol_id(accessPropList, &vol_id), "cannot get vol id");
+        HDF5_CHECK(H5Pclose(accessPropList), "cannot close access property list");
+
+        if(vol_id == H5VL_NATIVE)
+#endif
+                ret = MPIIO_GetFileSize(test, testFileName);
+#ifdef HAVE_H5PGET_VOL_ID
+        else {
+                if(rank == 0)
+                    WARN("getfilesize not supported with current VOL connector!");
+
+                ret = -1;
+        }
+
+        HDF5_CHECK(H5VLclose(vol_id), "cannot close VOL ID");
+#endif
+
+        return ret;
+}
+
+static int HDF5_StatFS(const char * oid, ior_aiori_statfs_t * stat_buf,
+                       aiori_mod_opt_t * param)
+{
+        int ret;
+#ifdef HAVE_H5PGET_VOL_ID
+        hid_t vol_id, accessPropList;
+
+        /* set up file access property list */
+        accessPropList = H5Pcreate(H5P_FILE_ACCESS);
+        HDF5_CHECK(accessPropList, "cannot create file access property list");
+        HDF5_CHECK(H5Pget_vol_id(accessPropList, &vol_id), "cannot get vol id");
+        HDF5_CHECK(H5Pclose(accessPropList), "cannot close access property list");
+
+        if(vol_id == H5VL_NATIVE)
+#endif
+                ret = aiori_posix_statfs(oid, stat_buf, param);
+#ifdef HAVE_H5PGET_VOL_ID
+        else {
+                if(rank == 0)
+                    WARN("statfs not supported by current VOL connector!");
+
+                ret = -1;
+        }
+
+        HDF5_CHECK(H5VLclose(vol_id), "cannot close VOL ID");
+#endif
+
+        return ret;
+}
+
+static int HDF5_MkDir(const char * oid, mode_t mode, aiori_mod_opt_t * param)
+{
+        int ret;
+#ifdef HAVE_H5PGET_VOL_ID
+        hid_t vol_id, accessPropList;
+
+        /* set up file access property list */
+        accessPropList = H5Pcreate(H5P_FILE_ACCESS);
+        HDF5_CHECK(accessPropList, "cannot create file access property list");
+        HDF5_CHECK(H5Pget_vol_id(accessPropList, &vol_id), "cannot get vol id");
+        HDF5_CHECK(H5Pclose(accessPropList), "cannot close access property list");
+
+        if(vol_id == H5VL_NATIVE)
+#endif
+                ret = aiori_posix_mkdir(oid, mode, param);
+#ifdef HAVE_H5PGET_VOL_ID
+        else {
+                if(rank == 0)
+                    WARN("mkdir not supported by current VOL connector!");
+
+                ret = -1;
+        }
+
+        HDF5_CHECK(H5VLclose(vol_id), "cannot close VOL ID");
+#endif
+
+        return ret;
+}
+
+static int HDF5_RmDir(const char * oid, aiori_mod_opt_t * param)
+{
+        int ret;
+#ifdef HAVE_H5PGET_VOL_ID
+        hid_t vol_id, accessPropList;
+
+        /* set up file access property list */
+        accessPropList = H5Pcreate(H5P_FILE_ACCESS);
+        HDF5_CHECK(accessPropList, "cannot create file access property list");
+        HDF5_CHECK(H5Pget_vol_id(accessPropList, &vol_id), "cannot get vol id");
+        HDF5_CHECK(H5Pclose(accessPropList), "cannot close access property list");
+
+        if(vol_id == H5VL_NATIVE)
+#endif
+                ret = aiori_posix_rmdir(oid, param);
+#ifdef HAVE_H5PGET_VOL_ID
+        else {
+                if(rank == 0)
+                    WARN("rmdir not supported by current VOL connector!");
+
+                ret = -1;
+        }
+
+        HDF5_CHECK(H5VLclose(vol_id), "cannot close VOL ID");
+#endif
+
+        return ret;
+}
+
+static int HDF5_Access(const char * path, int mode, aiori_mod_opt_t * param)
+{
+        htri_t accessible = -1;
+        hid_t accessPropList;
+        MPI_Comm comm = MPI_COMM_SELF; /* Ony one rank accesses the file */
+        MPI_Info mpiHints = MPI_INFO_NULL;
+        int ret = -1;
+
+        if(hints->dryRun)
+                return 0;
+
+#ifdef HAVE_H5FIS_ACCESSIBLE
+        /* set up file access property list */
+        accessPropList = H5Pcreate(H5P_FILE_ACCESS);
+        HDF5_CHECK(accessPropList, "cannot create file access property list");
+
+        HDF5_CHECK(H5Pset_fapl_mpio(accessPropList, comm, mpiHints),
+                   "cannot set file access property list");
+
+        H5E_BEGIN_TRY {
+            accessible = H5Fis_accessible(path, accessPropList);
+        } H5E_END_TRY;
+        if (accessible > 0)
+            ret = 0;
+
+        HDF5_CHECK(H5Pclose(accessPropList),
+                   "cannot close access property list");
+#else
+        ret = MPIIO_Access(path, mode, param);
+#endif
+
+        return ret;
+}
+
+static int HDF5_Stat(const char * oid, struct stat * buf, aiori_mod_opt_t * param)
+{
+        int ret;
+#ifdef HAVE_H5PGET_VOL_ID
+        hid_t vol_id, accessPropList;
+
+        /* set up file access property list */
+        accessPropList = H5Pcreate(H5P_FILE_ACCESS);
+        HDF5_CHECK(accessPropList, "cannot create file access property list");
+        HDF5_CHECK(H5Pget_vol_id(accessPropList, &vol_id), "cannot get vol id");
+        HDF5_CHECK(H5Pclose(accessPropList), "cannot close access property list");
+
+        if(vol_id == H5VL_NATIVE)
+#endif
+                ret = aiori_posix_stat(oid, buf, param);
+#ifdef HAVE_H5PGET_VOL_ID
+        else {
+                if(rank == 0)
+                    WARN("stat not supported by current VOL connector!");
+
+                ret = -1;
+        }
+
+        HDF5_CHECK(H5VLclose(vol_id), "cannot close VOL ID");
+#endif
+
+        return ret;
 }
 
 /*
- * Use MPIIO call to get file size.
+ * Call H5close to ensure library is
+ * shutdown before MPI_Finalize is called
  */
-static IOR_offset_t
-HDF5_GetFileSize(aiori_mod_opt_t * test, char *testFileName)
+static void
+HDF5_Finalize(aiori_mod_opt_t * options)
 {
-  if(hints->dryRun)
-    return 0;
-  return(MPIIO_GetFileSize(test, testFileName));
-}
-
-/*
- * Use MPIIO call to check for access.
- */
-static int HDF5_Access(const char *path, int mode, aiori_mod_opt_t *param)
-{
-  if(hints->dryRun)
-    return 0;
-  return(MPIIO_Access(path, mode, param));
+    H5close();
 }

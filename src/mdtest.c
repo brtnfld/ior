@@ -76,6 +76,14 @@
 
 #include <mpi.h>
 
+#ifdef HAVE_GPFSCREATESHARING_T
+#include <gpfs_fcntl.h>
+#include "aiori-POSIX.h"
+#ifndef   open64                /* necessary for TRU64 -- */
+#  define open64  open          /* unlikely, but may pose */
+#endif  /* not open64 */        /* conflicting prototypes */
+#endif /* HAVE_GPFSCREATESHARING_T */
+
 #pragma GCC diagnostic ignored "-Wformat-overflow"
 
 #ifdef HAVE_LUSTRE_LUSTREAPI
@@ -110,7 +118,10 @@ typedef struct {
   char unique_rm_uni_dir[MAX_PATHLEN];
   char *write_buffer;
   char *stoneWallingStatusFile;
-  int gpu_memory_flags;
+  ior_memory_flags gpuMemoryFlags;  /* use the GPU to store the data */
+  int gpuDirect;                /* use gpuDirect, this influences gpuMemoryFlags as well */
+  int gpuID;                       /* the GPU to use for gpuDirect or memory options */
+
 
 
   int barriers;
@@ -401,7 +412,7 @@ static void create_file (const char *path, uint64_t itemNum) {
         VERBOSE(3,5,"create_remove_items_helper: write..." );
 
         o.hints.fsyncPerWrite = o.sync_file;
-        update_write_memory_pattern(itemNum, o.write_buffer, o.write_bytes, o.random_buffer_offset, rank, o.dataPacketType);
+        update_write_memory_pattern(itemNum, o.write_buffer, o.write_bytes, o.random_buffer_offset, rank, o.dataPacketType, o.gpuMemoryFlags);
 
         if ( o.write_bytes != (size_t) o.backend->xfer(WRITE, aiori_fh, (IOR_size_t *) o.write_buffer, o.write_bytes, 0, o.backend_options)) {
             WARNF("unable to write file %s", curr_item);
@@ -412,7 +423,7 @@ static void create_file (const char *path, uint64_t itemNum) {
             if (o.write_bytes != (size_t) o.backend->xfer(READ, aiori_fh, (IOR_size_t *) o.write_buffer, o.write_bytes, 0, o.backend_options)) {
                 WARNF("unable to verify write (read/back) file %s", curr_item);
             }
-            int error = verify_memory_pattern(itemNum, o.write_buffer, o.write_bytes, o.random_buffer_offset, rank, o.dataPacketType);
+            int error = verify_memory_pattern(itemNum, o.write_buffer, o.write_bytes, o.random_buffer_offset, rank, o.dataPacketType, o.gpuMemoryFlags);
             o.verification_error += error;
             if(error){
                 VERBOSE(1,1,"verification error in file: %s", curr_item);
@@ -650,8 +661,8 @@ void mdtest_read(int random, int dirs, const long dir_iter, char *path) {
 
     /* allocate read buffer */
     if (o.read_bytes > 0) {
-        read_buffer = aligned_buffer_alloc(o.read_bytes, o.gpu_memory_flags);
-        memset(read_buffer, -1, o.read_bytes);
+        read_buffer = aligned_buffer_alloc(o.read_bytes, o.gpuMemoryFlags);
+        invalidate_buffer_pattern(read_buffer, o.read_bytes, o.gpuMemoryFlags);
     }
 
     uint64_t stop_items = o.items;
@@ -730,7 +741,7 @@ void mdtest_read(int random, int dirs, const long dir_iter, char *path) {
 
         /* read file */
         if (o.read_bytes > 0) {
-            read_buffer[0] = 42;
+            invalidate_buffer_pattern(read_buffer, o.read_bytes, o.gpuMemoryFlags);
             if (o.read_bytes != (size_t) o.backend->xfer(READ, aiori_fh, (IOR_size_t *) read_buffer, o.read_bytes, 0, o.backend_options)) {
                 WARNF("unable to read file %s", item);
                 o.verification_error += 1;
@@ -741,7 +752,7 @@ void mdtest_read(int random, int dirs, const long dir_iter, char *path) {
               if (o.shared_file) {
                 pretend_rank = rank;
               }
-              int error = verify_memory_pattern(item_num, read_buffer, o.read_bytes, o.random_buffer_offset, pretend_rank, o.dataPacketType);
+              int error = verify_memory_pattern(item_num, read_buffer, o.read_bytes, o.random_buffer_offset, pretend_rank, o.dataPacketType, o.gpuMemoryFlags);
               o.verification_error += error;
               if(error){
                 VERBOSE(1,1,"verification error in file: %s", item);
@@ -753,7 +764,7 @@ void mdtest_read(int random, int dirs, const long dir_iter, char *path) {
         o.backend->close (aiori_fh, o.backend_options);
     }
     if(o.read_bytes){
-      aligned_buffer_free(read_buffer, o.gpu_memory_flags);
+      aligned_buffer_free(read_buffer, o.gpuMemoryFlags);
     }
 }
 
@@ -1135,6 +1146,37 @@ int updateStoneWallIterations(int iteration, uint64_t items_done, double tstart,
   return hit;
 }
 
+#ifdef HAVE_GPFSCREATESHARING_T
+void gpfs_createSharing(char *testDirName, int enable)
+{
+  int fd, rc;
+  int fd_oflag = O_RDONLY;
+
+  struct
+  {
+    gpfsFcntlHeader_t header;
+    gpfsCreateSharing_t fcreate;
+  } createSharingHint;
+
+  createSharingHint.header.totalLength = sizeof(createSharingHint);
+  createSharingHint.header.fcntlVersion = GPFS_FCNTL_CURRENT_VERSION;
+  createSharingHint.header.fcntlReserved = 0;
+
+  createSharingHint.fcreate.structLen = sizeof(createSharingHint.fcreate);
+  createSharingHint.fcreate.structType = GPFS_CREATE_SHARING;
+  createSharingHint.fcreate.enable = enable;
+
+  fd = open64(testDirName, fd_oflag);
+  if (fd < 0)
+    ERRF("open64(\"%s\", %d) failed: %s", testDirName, fd_oflag, strerror(errno));
+
+  rc = gpfs_fcntl(fd, &createSharingHint);
+  if (verbose >= VERBOSE_2 && rc != 0) {
+    WARNF("gpfs_fcntl(%d, ...) create sharing hint failed. rc %d", fd, rc);
+  }
+}
+#endif  /* HAVE_GPFSCREATESHARING_T */
+
 void file_test_create(const int iteration, const int ntasks, const char *path, rank_progress_t * progress, double *t_start){
   char temp_path[MAX_PATHLEN];
   for (int dir_iter = 0; dir_iter < o.directory_loops; dir_iter ++){
@@ -1203,12 +1245,30 @@ void file_test(const int iteration, const int ntasks, const char *path, rank_pro
     if (o.create_only ) {
       phase_prepare();
       t_start = GetTimeStamp();
+#ifdef HAVE_GPFSCREATESHARING_T
+      /* Enable createSharingHint */
+      posix_options_t * hint_backend_option = (posix_options_t*) o.backend_options;
+      if (hint_backend_option->gpfs_createsharing)
+      {
+        sprintf(temp_path, "%s/%s", o.testdir, path);
+        VERBOSE(3,5,"file_test: GPFS Hint enable directory path is '%s'", temp_path);
+        gpfs_createSharing(temp_path, 1);
+      }
+#endif  /* HAVE_GPFSCREATESHARING_T */
       progress->stone_wall_timer_seconds = o.stone_wall_timer_seconds;
       progress->items_done = 0;
       progress->start_time = GetTimeStamp();
       file_test_create(iteration, ntasks, path, progress, &t_start);
       t_end_before_barrier = GetTimeStamp();
       phase_end();
+#ifdef HAVE_GPFSCREATESHARING_T
+      /* Disable createSharingHint */
+      if (hint_backend_option->gpfs_createsharing)
+      {
+        VERBOSE(3,5,"file_test: GPFS Hint disable directory path is '%s'", temp_path);
+        gpfs_createSharing(temp_path, 0);
+      }
+#endif  /* HAVE_GPFSCREATESHARING_T */
       t_end = GetTimeStamp();
       updateResult(res, MDTEST_FILE_CREATE_NUM, o.items, t_start, t_end, t_end_before_barrier);
     }else{
@@ -2165,6 +2225,7 @@ void mdtest_init_args(){
      .random_buffer_offset = -1,
      .prologue = "",
      .epilogue = "",
+     .gpuID = -1,
   };
 }
 
@@ -2252,7 +2313,13 @@ mdtest_results_t * mdtest_run(int argc, char **argv, MPI_Comm world_com, FILE * 
       {0, "dataPacketType", "type of packet that will be created [offset|incompressible|timestamp|random|o|i|t|r]", OPTION_OPTIONAL_ARGUMENT, 's', & packetType},
       {0, "run-cmd-before-phase", "call this external command before each phase (excluded from the timing)", OPTION_OPTIONAL_ARGUMENT, 's', & o.prologue},
       {0, "run-cmd-after-phase",  "call this external command after each phase (included in the timing)", OPTION_OPTIONAL_ARGUMENT, 's', & o.epilogue},
-      {0, "allocateBufferOnGPU", "Allocate the buffer on the GPU.", OPTION_FLAG, 'd', & o.gpu_memory_flags},
+#ifdef HAVE_CUDA
+      {0, "allocateBufferOnGPU", "Allocate I/O buffers on the GPU: X=1 uses managed memory - verifications are run on CPU; X=2 managed memory - verifications on GPU; X=3 device memory with verifications on GPU.", OPTION_OPTIONAL_ARGUMENT, 'd', & o.gpuMemoryFlags},
+      {0, "GPUid", "Select the GPU to use, use -1 for round-robin among local procs.", OPTION_OPTIONAL_ARGUMENT, 'd', & o.gpuID},
+#ifdef HAVE_GPU_DIRECT
+      {0, "gpuDirect", "Allocate I/O buffers on the GPU and use gpuDirect to store data; this option is incompatible with any option requiring CPU access to data.", OPTION_FLAG, 'd', & o.gpuDirect},
+#endif
+#endif
       {0, "warningAsErrors",        "Any warning should lead to an error.", OPTION_FLAG, 'd', & aiori_warning_as_errors},
       {0, "saveRankPerformanceDetails", "Save the individual rank information into this CSV file.", OPTION_OPTIONAL_ARGUMENT, 's', & o.saveRankDetailsCSV},
       {0, "showRankStatistics", "Include statistics per rank", OPTION_FLAG, 'd', & o.show_perrank_statistics},
@@ -2326,7 +2393,6 @@ mdtest_results_t * mdtest_run(int argc, char **argv, MPI_Comm world_com, FILE * 
       o.directory_loops = 1;
     }
     md_validate_tests();
-
     // option_print_current(options);
     VERBOSE(1,-1, "api                     : %s", o.api);
     VERBOSE(1,-1, "barriers                : %s", ( o.barriers ? "True" : "False" ));
@@ -2364,6 +2430,11 @@ mdtest_results_t * mdtest_run(int argc, char **argv, MPI_Comm world_com, FILE * 
     VERBOSE(1,-1, "call_sync               : %s", ( o.call_sync ? "True" : "False" ));
     VERBOSE(1,-1, "depth                   : %d", o.depth );
     VERBOSE(1,-1, "make_node               : %d", o.make_node );
+    int tasksBlockMapping = QueryNodeMapping(testComm, true);
+
+    if(o.gpuMemoryFlags != IOR_MEMORY_TYPE_CPU){
+       initCUDA(tasksBlockMapping, rank, numNodes, numTasksOnNode0, o.gpuID);
+    }
 
     /* setup total number of items and number of items per dir */
     if (o.depth <= 0) {
@@ -2441,8 +2512,8 @@ mdtest_results_t * mdtest_run(int argc, char **argv, MPI_Comm world_com, FILE * 
 
     /* allocate and initialize write buffer with # */
     if (o.write_bytes > 0) {
-        o.write_buffer = aligned_buffer_alloc(o.write_bytes, o.gpu_memory_flags);
-        generate_memory_pattern(o.write_buffer, o.write_bytes, o.random_buffer_offset, rank, o.dataPacketType);
+        o.write_buffer = aligned_buffer_alloc(o.write_bytes, o.gpuMemoryFlags);
+        generate_memory_pattern(o.write_buffer, o.write_bytes, o.random_buffer_offset, rank, o.dataPacketType, o.gpuMemoryFlags);
     }
 
     /* setup directory path to work in */
@@ -2468,8 +2539,6 @@ mdtest_results_t * mdtest_run(int argc, char **argv, MPI_Comm world_com, FILE * 
     VERBOSE(3,-1,"main (before display_freespace): o.testdirpath is '%s'", o.testdirpath );
 
     if (rank == 0) ShowFileSystemSize(o.testdirpath, o.backend, o.backend_options);
-    int tasksBlockMapping = QueryNodeMapping(testComm, true);
-
     /* set the shift to mimic IOR and shift by procs per node */
     if (o.nstride > 0) {
         if ( numNodes > 1 && tasksBlockMapping ) {
@@ -2601,7 +2670,7 @@ mdtest_results_t * mdtest_run(int argc, char **argv, MPI_Comm world_com, FILE * 
     }
 
     if (o.write_bytes > 0) {
-      aligned_buffer_free(o.write_buffer, o.gpu_memory_flags);
+      aligned_buffer_free(o.write_buffer, o.gpuMemoryFlags);
     }
     free(o.summary_table);
 
